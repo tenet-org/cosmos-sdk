@@ -8,32 +8,37 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"cosmossdk.io/math"
+	"cosmossdk.io/x/mint"
+	"cosmossdk.io/x/mint/simulation"
+	"cosmossdk.io/x/mint/types"
+
+	codectestutil "github.com/cosmos/cosmos-sdk/codec/testutil"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/module"
 	moduletestutil "github.com/cosmos/cosmos-sdk/types/module/testutil"
 	simtypes "github.com/cosmos/cosmos-sdk/types/simulation"
-	"github.com/cosmos/cosmos-sdk/x/mint"
-	"github.com/cosmos/cosmos-sdk/x/mint/simulation"
-	"github.com/cosmos/cosmos-sdk/x/mint/types"
 )
 
 // TestRandomizedGenState tests the normal scenario of applying RandomizedGenState.
 // Abonormal scenarios are not tested here.
 func TestRandomizedGenState(t *testing.T) {
-	encCfg := moduletestutil.MakeTestEncodingConfig(mint.AppModuleBasic{})
+	cdcOpts := codectestutil.CodecOptions{}
+	encCfg := moduletestutil.MakeTestEncodingConfig(cdcOpts, mint.AppModule{})
 
 	s := rand.NewSource(1)
 	r := rand.New(s)
 
 	simState := module.SimulationState{
-		AppParams:    make(simtypes.AppParams),
-		Cdc:          encCfg.Codec,
-		Rand:         r,
-		NumBonded:    3,
-		BondDenom:    sdk.DefaultBondDenom,
-		Accounts:     simtypes.RandomAccounts(r, 3),
-		InitialStake: math.NewInt(1000),
-		GenState:     make(map[string]json.RawMessage),
+		AppParams:      make(simtypes.AppParams),
+		Cdc:            encCfg.Codec,
+		AddressCodec:   cdcOpts.GetAddressCodec(),
+		ValidatorCodec: cdcOpts.GetValidatorCodec(),
+		Rand:           r,
+		NumBonded:      3,
+		BondDenom:      sdk.DefaultBondDenom,
+		Accounts:       simtypes.RandomAccounts(r, 3),
+		InitialStake:   math.NewInt(1000),
+		GenState:       make(map[string]json.RawMessage),
 	}
 
 	simulation.RandomizedGenState(&simState)
@@ -41,9 +46,9 @@ func TestRandomizedGenState(t *testing.T) {
 	var mintGenesis types.GenesisState
 	simState.Cdc.MustUnmarshalJSON(simState.GenState[types.ModuleName], &mintGenesis)
 
-	dec1, _ := sdk.NewDecFromStr("0.670000000000000000")
-	dec2, _ := sdk.NewDecFromStr("0.200000000000000000")
-	dec3, _ := sdk.NewDecFromStr("0.070000000000000000")
+	dec1, _ := math.LegacyNewDecFromStr("0.670000000000000000")
+	dec2, _ := math.LegacyNewDecFromStr("0.200000000000000000")
+	dec3, _ := math.LegacyNewDecFromStr("0.070000000000000000")
 
 	require.Equal(t, uint64(6311520), mintGenesis.Params.BlocksPerYear)
 	require.Equal(t, dec1, mintGenesis.Params.GoalBonded)
@@ -59,7 +64,7 @@ func TestRandomizedGenState(t *testing.T) {
 
 // TestRandomizedGenState tests abnormal scenarios of applying RandomizedGenState.
 func TestRandomizedGenState1(t *testing.T) {
-	encCfg := moduletestutil.MakeTestEncodingConfig(mint.AppModuleBasic{})
+	encCfg := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, mint.AppModule{})
 
 	s := rand.NewSource(1)
 	r := rand.New(s)
@@ -79,6 +84,8 @@ func TestRandomizedGenState1(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
+
 		require.Panicsf(t, func() { simulation.RandomizedGenState(&tt.simState) }, tt.panicMsg)
 	}
 }

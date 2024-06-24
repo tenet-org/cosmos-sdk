@@ -3,7 +3,7 @@ package secp256r1
 import (
 	"testing"
 
-	proto "github.com/cosmos/gogoproto/proto"
+	"github.com/cosmos/gogoproto/proto"
 	"github.com/stretchr/testify/suite"
 
 	"github.com/cosmos/cosmos-sdk/codec"
@@ -68,7 +68,7 @@ func (suite *PKSuite) TestEquals() {
 func (suite *PKSuite) TestMarshalProto() {
 	require := suite.Require()
 
-	/**** test structure marshalling ****/
+	/**** test structure marshaling ****/
 
 	var pk PubKey
 	bz, err := proto.Marshal(suite.pk)
@@ -76,7 +76,7 @@ func (suite *PKSuite) TestMarshalProto() {
 	require.NoError(proto.Unmarshal(bz, &pk))
 	require.True(pk.Equals(suite.pk))
 
-	/**** test structure marshalling with codec ****/
+	/**** test structure marshaling with codec ****/
 
 	pk = PubKey{}
 	emptyRegistry := types.NewInterfaceRegistry()
@@ -104,7 +104,7 @@ func (suite *PKSuite) TestMarshalProto() {
 	require.Len(bz2, bufSize)
 	require.Equal(bz, bz2[(bufSize-pk.Size()):])
 
-	/**** test interface marshalling ****/
+	/**** test interface marshaling ****/
 	bz, err = pubkeyCodec.MarshalInterface(suite.pk)
 	require.NoError(err)
 	var pkI cryptotypes.PubKey
@@ -125,4 +125,15 @@ func (suite *PKSuite) TestSize() {
 
 	var nilPk *ecdsaPK
 	require.Equal(0, nilPk.Size(), "nil value must have zero size")
+}
+
+func (suite *PKSuite) TestJson() {
+	require := suite.Require()
+
+	bz, err := suite.pk.Key.MarshalJSON()
+	require.NoError(err)
+
+	pk := &ecdsaPK{}
+	require.NoError(pk.UnmarshalJSON(bz))
+	require.Equal(suite.pk.Key, pk)
 }

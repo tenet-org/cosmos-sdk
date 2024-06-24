@@ -6,10 +6,11 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/cosmos/cosmos-sdk/orm/encoding/ormkv"
-	"github.com/cosmos/cosmos-sdk/orm/internal/stablejson"
-	"github.com/cosmos/cosmos-sdk/orm/model/ormtable"
-	"github.com/cosmos/cosmos-sdk/orm/types/kv"
+	"cosmossdk.io/core/store"
+	"cosmossdk.io/orm/encoding/ormkv"
+	"cosmossdk.io/orm/internal/stablejson"
+	"cosmossdk.io/orm/model/ormtable"
+	"cosmossdk.io/orm/types/kv"
 )
 
 // Debugger is an interface that handles debug info from the debug store wrapper.
@@ -77,7 +78,7 @@ func (t debugStore) Has(key []byte) (bool, error) {
 	return has, nil
 }
 
-func (t debugStore) Iterator(start, end []byte) (kv.Iterator, error) {
+func (t debugStore) Iterator(start, end []byte) (store.Iterator, error) {
 	if t.debugger != nil {
 		t.debugger.Log(fmt.Sprintf("ITERATOR %x -> %x", start, end))
 	}
@@ -92,7 +93,7 @@ func (t debugStore) Iterator(start, end []byte) (kv.Iterator, error) {
 	}, nil
 }
 
-func (t debugStore) ReverseIterator(start, end []byte) (kv.Iterator, error) {
+func (t debugStore) ReverseIterator(start, end []byte) (store.Iterator, error) {
 	if t.debugger != nil {
 		t.debugger.Log(fmt.Sprintf("ITERATOR %x <- %x", start, end))
 	}
@@ -140,12 +141,12 @@ func (t debugStore) Delete(key []byte) error {
 var _ kv.Store = &debugStore{}
 
 type debugIterator struct {
-	iterator  kv.Iterator
+	iterator  store.Iterator
 	storeName string
 	debugger  Debugger
 }
 
-func (d debugIterator) Domain() (start []byte, end []byte) {
+func (d debugIterator) Domain() (start, end []byte) {
 	start, end = d.iterator.Domain()
 	d.debugger.Log(fmt.Sprintf("  DOMAIN %x -> %x", start, end))
 	return start, end
@@ -185,7 +186,7 @@ func (d debugIterator) Close() error {
 	return d.iterator.Close()
 }
 
-var _ kv.Iterator = &debugIterator{}
+var _ store.Iterator = &debugIterator{}
 
 // EntryCodecDebugger is a Debugger instance that uses an EntryCodec and Print
 // function for debugging.
@@ -235,12 +236,12 @@ func (d debugHooks) ValidateInsert(context context.Context, message proto.Messag
 }
 
 func (d debugHooks) ValidateUpdate(ctx context.Context, existing, new proto.Message) error {
-	existingJson, err := stablejson.Marshal(existing)
+	existingJSON, err := stablejson.Marshal(existing)
 	if err != nil {
 		return err
 	}
 
-	newJson, err := stablejson.Marshal(new)
+	newJSON, err := stablejson.Marshal(new)
 	if err != nil {
 		return err
 	}
@@ -248,8 +249,8 @@ func (d debugHooks) ValidateUpdate(ctx context.Context, existing, new proto.Mess
 	d.debugger.Log(fmt.Sprintf(
 		"ORM BEFORE UPDATE %s %s -> %s",
 		existing.ProtoReflect().Descriptor().FullName(),
-		existingJson,
-		newJson,
+		existingJSON,
+		newJSON,
 	))
 	if d.validateHooks != nil {
 		return d.validateHooks.ValidateUpdate(ctx, existing, new)
@@ -291,12 +292,12 @@ func (d debugHooks) OnInsert(ctx context.Context, message proto.Message) {
 }
 
 func (d debugHooks) OnUpdate(ctx context.Context, existing, new proto.Message) {
-	existingJson, err := stablejson.Marshal(existing)
+	existingJSON, err := stablejson.Marshal(existing)
 	if err != nil {
 		panic(err)
 	}
 
-	newJson, err := stablejson.Marshal(new)
+	newJSON, err := stablejson.Marshal(new)
 	if err != nil {
 		panic(err)
 	}
@@ -304,8 +305,8 @@ func (d debugHooks) OnUpdate(ctx context.Context, existing, new proto.Message) {
 	d.debugger.Log(fmt.Sprintf(
 		"ORM AFTER UPDATE %s %s -> %s",
 		existing.ProtoReflect().Descriptor().FullName(),
-		existingJson,
-		newJson,
+		existingJSON,
+		newJSON,
 	))
 	if d.writeHooks != nil {
 		d.writeHooks.OnUpdate(ctx, existing, new)

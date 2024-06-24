@@ -16,7 +16,7 @@ func Test_genPrivKey(t *testing.T) {
 	copy(onePadded[32-len(oneB):32], oneB)
 	t.Logf("one padded: %v, len=%v", onePadded, len(onePadded))
 
-	validOne := append(empty, onePadded...) //nolint:gocritic // append is fine here
+	validOne := append(empty, onePadded...)
 	tests := []struct {
 		name        string
 		notSoRand   []byte
@@ -31,11 +31,11 @@ func Test_genPrivKey(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.shouldPanic {
 				require.Panics(t, func() {
-					genPrivKey(bytes.NewReader(tt.notSoRand))
+					genPrivKeyLegacy(bytes.NewReader(tt.notSoRand))
 				})
 				return
 			}
-			got := genPrivKey(bytes.NewReader(tt.notSoRand))
+			got := genPrivKeyLegacy(bytes.NewReader(tt.notSoRand))
 			fe := new(big.Int).SetBytes(got)
 			require.True(t, fe.Cmp(secp.S256().N) < 0)
 			require.True(t, fe.Sign() > 0)

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	abci "github.com/cometbft/cometbft/abci/types"
+	crypto "github.com/cometbft/cometbft/api/cometbft/crypto/v1"
 	dbm "github.com/cosmos/cosmos-db"
 
 	"cosmossdk.io/store/metrics"
@@ -22,8 +22,19 @@ type Committer interface {
 	Commit() CommitID
 	LastCommitID() CommitID
 
+	// WorkingHash returns the hash of the KVStore's state before commit.
+	WorkingHash() []byte
+
 	SetPruning(pruningtypes.PruningOptions)
 	GetPruning() pruningtypes.PruningOptions
+}
+
+type PausablePruner interface {
+	// PausePruning let the pruning handler know that the store is being committed
+	// or not, so the handler can decide to prune or not the store.
+	//
+	// NOTE: PausePruning(true) should be called before Commit() and PausePruning(false)
+	PausePruning(bool)
 }
 
 // Stores of MultiStore must implement CommitStore.
@@ -37,7 +48,26 @@ type CommitStore interface {
 //
 // This is an optional, but useful extension to any CommitStore
 type Queryable interface {
-	Query(abci.RequestQuery) abci.ResponseQuery
+	Query(*RequestQuery) (*ResponseQuery, error)
+}
+
+type RequestQuery struct {
+	Data   []byte
+	Path   string
+	Height int64
+	Prove  bool
+}
+
+type ResponseQuery struct {
+	Code      uint32
+	Log       string
+	Info      string
+	Index     int64
+	Key       []byte
+	Value     []byte
+	ProofOps  *crypto.ProofOps
+	Height    int64
+	Codespace string
 }
 
 //----------------------------------------
@@ -188,18 +218,17 @@ type CommitMultiStore interface {
 	// SetIAVLDisableFastNode enables/disables fastnode feature on iavl.
 	SetIAVLDisableFastNode(disable bool)
 
-	// SetIAVLLazyLoading enable/disable lazy loading on iavl.
-	SetLazyLoading(lazyLoading bool)
-
 	// RollbackToVersion rollback the db to specific version(height).
 	RollbackToVersion(version int64) error
 
 	// ListeningEnabled returns if listening is enabled for the KVStore belonging the provided StoreKey
 	ListeningEnabled(key StoreKey) bool
 
-	// AddListeners adds WriteListeners for the KVStore belonging to the provided StoreKey
-	// It appends the listeners to a current set, if one already exists
-	AddListeners(key StoreKey, listeners []WriteListener)
+	// AddListeners adds a listener for the KVStore belonging to the provided StoreKey
+	AddListeners(keys []StoreKey)
+
+	// PopStateCache returns the accumulated state change messages from the CommitMultiStore
+	PopStateCache() []*StoreKVPair
 
 	// SetMetrics sets the metrics for the KVStore
 	SetMetrics(metrics metrics.StoreMetrics)

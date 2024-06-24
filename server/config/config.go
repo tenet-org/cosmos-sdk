@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"math"
-	"strings"
 
 	"github.com/spf13/viper"
 
@@ -30,9 +29,6 @@ const (
 	// DefaultGRPCMaxSendMsgSize defines the default gRPC max message size in
 	// bytes the server can send.
 	DefaultGRPCMaxSendMsgSize = math.MaxInt32
-
-	// FileStreamer defines the store streaming type for file streaming.
-	FileStreamer = "file"
 )
 
 // BaseConfig defines the server's basic configuration
@@ -41,6 +37,10 @@ type BaseConfig struct {
 	// transaction. A transaction's fees must meet the minimum of any denomination
 	// specified in this config (e.g. 0.25token1;0.0001token2).
 	MinGasPrices string `mapstructure:"minimum-gas-prices"`
+
+	// The maximum amount of gas a grpc/Rest query may consume.
+	// If set to 0, it is unbounded.
+	QueryGasLimit uint64 `mapstructure:"query-gas-limit"`
 
 	Pruning           string `mapstructure:"pruning"`
 	PruningKeepRecent string `mapstructure:"pruning-keep-recent"`
@@ -69,7 +69,7 @@ type BaseConfig struct {
 	// It has no bearing on application state pruning which is determined by the
 	// "pruning-*" configurations.
 	//
-	// Note: CometBFT block pruning is dependant on this parameter in conjunction
+	// Note: CometBFT block pruning is dependent on this parameter in conjunction
 	// with the unbonding (safety threshold) period, state pruning and state sync
 	// snapshot parameters to determine the correct minimum value of
 	// ResponseCommit.RetainHeight.
@@ -87,9 +87,6 @@ type BaseConfig struct {
 
 	// IAVLDisableFastNode enables or disables the fast sync node.
 	IAVLDisableFastNode bool `mapstructure:"iavl-disable-fastnode"`
-
-	// IAVLLazyLoading enable/disable the lazy loading of iavl store.
-	IAVLLazyLoading bool `mapstructure:"iavl-lazy-loading"`
 
 	// AppDBBackend defines the type of Database to use for the application and snapshots databases.
 	// An empty string indicates that the CometBFT config's DBBackend value should be used.
@@ -144,12 +141,6 @@ type GRPCConfig struct {
 	MaxSendMsgSize int `mapstructure:"max-send-msg-size"`
 }
 
-// GRPCWebConfig defines configuration for the gRPC-web server.
-type GRPCWebConfig struct {
-	// Enable defines if the gRPC-web should be enabled.
-	Enable bool `mapstructure:"enable"`
-}
-
 // StateSyncConfig defines the state sync snapshot configuration.
 type StateSyncConfig struct {
 	// SnapshotInterval sets the interval at which state sync snapshots are taken.
@@ -168,37 +159,20 @@ type MempoolConfig struct {
 	// the mempool is disabled entirely, zero indicates that the mempool is
 	// unbounded in how many txs it may contain, and a positive value indicates
 	// the maximum amount of txs it may contain.
-	MaxTxs int
+	MaxTxs int `mapstructure:"max-txs"`
 }
 
+// State Streaming configuration
 type (
-	// StoreConfig defines application configuration for state streaming and other
-	// storage related operations.
-	StoreConfig struct {
-		Streamers []string `mapstructure:"streamers"`
+	// StreamingConfig defines application configuration for external streaming services
+	StreamingConfig struct {
+		ABCI ABCIListenerConfig `mapstructure:"abci"`
 	}
-
-	// StreamersConfig defines concrete state streaming configuration options. These
-	// fields are required to be set when state streaming is enabled via a non-empty
-	// list defined by 'StoreConfig.Streamers'.
-	StreamersConfig struct {
-		File FileStreamerConfig `mapstructure:"file"`
-	}
-
-	// FileStreamerConfig defines the file streaming configuration options.
-	FileStreamerConfig struct {
-		Keys     []string `mapstructure:"keys"`
-		WriteDir string   `mapstructure:"write_dir"`
-		Prefix   string   `mapstructure:"prefix"`
-		// OutputMetadata specifies if output the block metadata file which includes
-		// the abci requests/responses, otherwise only the data file is outputted.
-		OutputMetadata bool `mapstructure:"output-metadata"`
-		// StopNodeOnError specifies if propagate the streamer errors to the consensus
-		// state machine, it's nesserary for data integrity of output.
-		StopNodeOnError bool `mapstructure:"stop-node-on-error"`
-		// Fsync specifies if calling fsync after writing the files, it slows down
-		// the commit, but don't lose data in face of system crash.
-		Fsync bool `mapstructure:"fsync"`
+	// ABCIListenerConfig defines application configuration for ABCIListener streaming service
+	ABCIListenerConfig struct {
+		Keys          []string `mapstructure:"keys"`
+		Plugin        string   `mapstructure:"plugin"`
+		StopNodeOnErr bool     `mapstructure:"stop-node-on-err"`
 	}
 )
 
@@ -210,10 +184,8 @@ type Config struct {
 	Telemetry telemetry.Config `mapstructure:"telemetry"`
 	API       APIConfig        `mapstructure:"api"`
 	GRPC      GRPCConfig       `mapstructure:"grpc"`
-	GRPCWeb   GRPCWebConfig    `mapstructure:"grpc-web"`
 	StateSync StateSyncConfig  `mapstructure:"state-sync"`
-	Store     StoreConfig      `mapstructure:"store"`
-	Streamers StreamersConfig  `mapstructure:"streamers"`
+	Streaming StreamingConfig  `mapstructure:"streaming"`
 	Mempool   MempoolConfig    `mapstructure:"mempool"`
 }
 
@@ -222,23 +194,15 @@ func (c *Config) SetMinGasPrices(gasPrices sdk.DecCoins) {
 	c.MinGasPrices = gasPrices.String()
 }
 
-// GetMinGasPrices returns the validator's minimum gas prices based on the set
-// configuration.
+// GetMinGasPrices returns the validator's minimum gas prices based on the set configuration.
 func (c *Config) GetMinGasPrices() sdk.DecCoins {
 	if c.MinGasPrices == "" {
 		return sdk.DecCoins{}
 	}
 
-	gasPricesStr := strings.Split(c.MinGasPrices, ";")
-	gasPrices := make(sdk.DecCoins, len(gasPricesStr))
-
-	for i, s := range gasPricesStr {
-		gasPrice, err := sdk.ParseDecCoin(s)
-		if err != nil {
-			panic(fmt.Errorf("failed to parse minimum gas price coin (%s): %s", s, err))
-		}
-
-		gasPrices[i] = gasPrice
+	gasPrices, err := sdk.ParseDecCoins(c.MinGasPrices)
+	if err != nil {
+		panic(fmt.Sprintf("invalid minimum gas prices: %v", err))
 	}
 
 	return gasPrices
@@ -249,6 +213,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		BaseConfig: BaseConfig{
 			MinGasPrices:        defaultMinGasPrices,
+			QueryGasLimit:       0,
 			InterBlockCache:     true,
 			Pruning:             pruningtypes.PruningOptionDefault,
 			PruningKeepRecent:   "0",
@@ -257,7 +222,6 @@ func DefaultConfig() *Config {
 			IndexEvents:         make([]string, 0),
 			IAVLCacheSize:       781250,
 			IAVLDisableFastNode: false,
-			IAVLLazyLoading:     false,
 			AppDBBackend:        "",
 		},
 		Telemetry: telemetry.Config{
@@ -278,29 +242,18 @@ func DefaultConfig() *Config {
 			MaxRecvMsgSize: DefaultGRPCMaxRecvMsgSize,
 			MaxSendMsgSize: DefaultGRPCMaxSendMsgSize,
 		},
-		GRPCWeb: GRPCWebConfig{
-			Enable: true,
-		},
 		StateSync: StateSyncConfig{
 			SnapshotInterval:   0,
 			SnapshotKeepRecent: 2,
 		},
-		Store: StoreConfig{
-			Streamers: []string{},
-		},
-		Streamers: StreamersConfig{
-			File: FileStreamerConfig{
-				Keys:            []string{"*"},
-				WriteDir:        "",
-				OutputMetadata:  true,
-				StopNodeOnError: true,
-				// NOTICE: The default config doesn't protect the streamer data integrity
-				// in face of system crash.
-				Fsync: false,
+		Streaming: StreamingConfig{
+			ABCI: ABCIListenerConfig{
+				Keys:          []string{},
+				StopNodeOnErr: true,
 			},
 		},
 		Mempool: MempoolConfig{
-			MaxTxs: 5_000,
+			MaxTxs: -1,
 		},
 	}
 }

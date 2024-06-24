@@ -7,7 +7,7 @@ import (
 	"time"
 	"unsafe"
 
-	sdkmath "cosmossdk.io/math"
+	"cosmossdk.io/math"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )
@@ -42,19 +42,19 @@ func RandStringOfLength(r *rand.Rand, n int) string {
 }
 
 // RandPositiveInt get a rand positive math.Int
-func RandPositiveInt(r *rand.Rand, max sdkmath.Int) (sdkmath.Int, error) {
-	if !max.GTE(sdkmath.OneInt()) {
-		return sdkmath.Int{}, errors.New("max too small")
+func RandPositiveInt(r *rand.Rand, max math.Int) (math.Int, error) {
+	if !max.GTE(math.OneInt()) {
+		return math.Int{}, errors.New("max too small")
 	}
 
-	max = max.Sub(sdkmath.OneInt())
+	max = max.Sub(math.OneInt())
 
-	return sdkmath.NewIntFromBigInt(new(big.Int).Rand(r, max.BigInt())).Add(sdkmath.OneInt()), nil
+	return math.NewIntFromBigInt(new(big.Int).Rand(r, max.BigInt())).Add(math.OneInt()), nil
 }
 
 // RandomAmount generates a random amount
 // Note: The range of RandomAmount includes max, and is, in fact, biased to return max as well as 0.
-func RandomAmount(r *rand.Rand, max sdkmath.Int) sdkmath.Int {
+func RandomAmount(r *rand.Rand, max math.Int) math.Int {
 	randInt := big.NewInt(0)
 
 	switch r.Intn(10) {
@@ -66,12 +66,12 @@ func RandomAmount(r *rand.Rand, max sdkmath.Int) sdkmath.Int {
 		randInt = big.NewInt(0).Rand(r, max.BigInt()) // up to max - 1
 	}
 
-	return sdkmath.NewIntFromBigInt(randInt)
+	return math.NewIntFromBigInt(randInt)
 }
 
 // RandomDecAmount generates a random decimal amount
 // Note: The range of RandomDecAmount includes max, and is, in fact, biased to return max as well as 0.
-func RandomDecAmount(r *rand.Rand, max sdkmath.LegacyDec) sdkmath.LegacyDec {
+func RandomDecAmount(r *rand.Rand, max math.LegacyDec) math.LegacyDec {
 	randInt := big.NewInt(0)
 
 	switch r.Intn(10) {
@@ -83,7 +83,7 @@ func RandomDecAmount(r *rand.Rand, max sdkmath.LegacyDec) sdkmath.LegacyDec {
 		randInt = big.NewInt(0).Rand(r, max.BigInt())
 	}
 
-	return sdkmath.LegacyNewDecFromBigIntWithPrec(randInt, sdkmath.LegacyPrecision)
+	return math.LegacyNewDecFromBigIntWithPrec(randInt, math.LegacyPrecision)
 }
 
 // RandTimestamp generates a random timestamp
@@ -100,12 +100,12 @@ func RandTimestamp(r *rand.Rand) time.Time {
 	return time.Unix(rtime, 0)
 }
 
-// RandIntBetween returns a random int between two numbers inclusively.
+// RandIntBetween returns a random int in the range [min, max) using a given source of randomness.
 func RandIntBetween(r *rand.Rand, min, max int) int {
 	return r.Intn(max-min) + min
 }
 
-// returns random subset of the provided coins
+// RandSubsetCoins returns random subset of the provided coins
 // will return at least one coin unless coins argument is empty or malformed
 // i.e. 0 amt in coins
 func RandSubsetCoins(r *rand.Rand, coins sdk.Coins) sdk.Coins {
@@ -147,31 +147,8 @@ func RandSubsetCoins(r *rand.Rand, coins sdk.Coins) sdk.Coins {
 }
 
 // DeriveRand derives a new Rand deterministically from another random source.
-// Unlike rand.New(rand.NewSource(seed)), the result is "more random"
-// depending on the source and state of r.
 //
 // NOTE: not crypto safe.
 func DeriveRand(r *rand.Rand) *rand.Rand {
-	const num = 8 // TODO what's a good number?  Too large is too slow.
-	ms := multiSource(make([]rand.Source, num))
-
-	for i := 0; i < num; i++ {
-		ms[i] = rand.NewSource(r.Int63())
-	}
-
-	return rand.New(ms)
-}
-
-type multiSource []rand.Source
-
-func (ms multiSource) Int63() (r int64) {
-	for _, source := range ms {
-		r ^= source.Int63()
-	}
-
-	return r
-}
-
-func (ms multiSource) Seed(seed int64) {
-	panic("multiSource Seed should not be called")
+	return rand.New(rand.NewSource(r.Int63()))
 }

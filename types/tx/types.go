@@ -3,8 +3,12 @@ package tx
 import (
 	"fmt"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"cosmossdk.io/core/registry"
 	errorsmod "cosmossdk.io/errors"
 
+	"github.com/cosmos/cosmos-sdk/codec"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -17,7 +21,6 @@ const MaxGasWanted = uint64((1 << 63) - 1)
 // Interface implementation checks.
 var (
 	_, _, _, _ codectypes.UnpackInterfacesMessage = &Tx{}, &TxBody{}, &AuthInfo{}, &SignerInfo{}
-	_          sdk.Tx                             = &Tx{}
 )
 
 // GetMsgs implements the GetMsgs method on sdk.Tx.
@@ -89,41 +92,49 @@ func (t *Tx) ValidateBasic() error {
 		return sdkerrors.ErrNoSignatures
 	}
 
-	if len(sigs) != len(t.GetSigners()) {
-		return errorsmod.Wrapf(
-			sdkerrors.ErrUnauthorized,
-			"wrong number of signers; expected %d, got %d", len(t.GetSigners()), len(sigs),
-		)
-	}
-
 	return nil
 }
 
 // GetSigners retrieves all the signers of a tx.
 // This includes all unique signers of the messages (in order),
 // as well as the FeePayer (if specified and not already included).
-func (t *Tx) GetSigners() []sdk.AccAddress {
-	var signers []sdk.AccAddress
+func (t *Tx) GetSigners(cdc codec.Codec) ([][]byte, []protoreflect.Message, error) {
+	var signers [][]byte
 	seen := map[string]bool{}
 
-	for _, msg := range t.GetMsgs() {
-		for _, addr := range msg.GetSigners() {
-			if !seen[addr.String()] {
-				signers = append(signers, addr)
-				seen[addr.String()] = true
+	var reflectMsgs []protoreflect.Message
+	for _, msg := range t.Body.Messages {
+		xs, reflectMsg, err := cdc.GetMsgAnySigners(msg)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		reflectMsgs = append(reflectMsgs, reflectMsg)
+
+		for _, signer := range xs {
+			if !seen[string(signer)] {
+				signers = append(signers, signer)
+				seen[string(signer)] = true
 			}
 		}
 	}
 
 	// ensure any specified fee payer is included in the required signers (at the end)
 	feePayer := t.AuthInfo.Fee.Payer
-	if feePayer != "" && !seen[feePayer] {
-		payerAddr := sdk.MustAccAddressFromBech32(feePayer)
-		signers = append(signers, payerAddr)
-		seen[feePayer] = true
+	var feePayerAddr []byte
+	if feePayer != "" {
+		var err error
+		feePayerAddr, err = cdc.InterfaceRegistry().SigningContext().AddressCodec().StringToBytes(feePayer)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if feePayerAddr != nil && !seen[string(feePayerAddr)] {
+		signers = append(signers, feePayerAddr)
+		seen[string(feePayerAddr)] = true
 	}
 
-	return signers
+	return signers, reflectMsgs, nil
 }
 
 func (t *Tx) GetGas() uint64 {
@@ -134,19 +145,33 @@ func (t *Tx) GetFee() sdk.Coins {
 	return t.AuthInfo.Fee.Amount
 }
 
-func (t *Tx) FeePayer() sdk.AccAddress {
+func (t *Tx) FeePayer(cdc codec.Codec) []byte {
 	feePayer := t.AuthInfo.Fee.Payer
 	if feePayer != "" {
-		return sdk.MustAccAddressFromBech32(feePayer)
+		feePayerAddr, err := cdc.InterfaceRegistry().SigningContext().AddressCodec().StringToBytes(feePayer)
+		if err != nil {
+			panic(err)
+		}
+		return feePayerAddr
 	}
 	// use first signer as default if no payer specified
-	return t.GetSigners()[0]
+	signers, _, err := t.GetSigners(cdc)
+	if err != nil {
+		panic(err)
+	}
+
+	return signers[0]
 }
 
-func (t *Tx) FeeGranter() sdk.AccAddress {
-	feePayer := t.AuthInfo.Fee.Granter
-	if feePayer != "" {
-		return sdk.MustAccAddressFromBech32(feePayer)
+func (t *Tx) FeeGranter(cdc codec.Codec) []byte {
+	feeGranter := t.AuthInfo.Fee.Granter
+	if feeGranter != "" {
+		feeGranterAddr, err := cdc.InterfaceRegistry().SigningContext().AddressCodec().StringToBytes(feeGranter)
+		if err != nil {
+			panic(err)
+		}
+
+		return feeGranterAddr
 	}
 	return nil
 }
@@ -202,11 +227,11 @@ func (m *SignerInfo) UnpackInterfaces(unpacker codectypes.AnyUnpacker) error {
 // RegisterInterfaces registers the sdk.Tx and MsgResponse interfaces.
 // Note: the registration of sdk.Msg is done in sdk.RegisterInterfaces, but it
 // could be moved inside this function.
-func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
+func RegisterInterfaces(registry registry.InterfaceRegistrar) {
 	registry.RegisterInterface(msgResponseInterfaceProtoName, (*MsgResponse)(nil))
 
-	registry.RegisterInterface("cosmos.tx.v1beta1.Tx", (*sdk.Tx)(nil))
-	registry.RegisterImplementations((*sdk.Tx)(nil), &Tx{})
+	registry.RegisterInterface("cosmos.tx.v1beta1.Tx", (*sdk.HasMsgs)(nil))
+	registry.RegisterImplementations((*sdk.HasMsgs)(nil), &Tx{})
 
-	registry.RegisterInterface("cosmos.tx.v1beta1.TxExtensionOptionI", (*ExtensionOptionI)(nil))
+	registry.RegisterInterface("cosmos.tx.v1beta1.TxExtensionOptionI", (*TxExtensionOptionI)(nil))
 }

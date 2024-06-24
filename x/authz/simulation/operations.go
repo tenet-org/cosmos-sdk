@@ -1,20 +1,27 @@
 package simulation
 
 import (
+	"context"
 	"math/rand"
 	"time"
 
+	"cosmossdk.io/core/address"
+	"cosmossdk.io/core/appmodule"
+	corecontext "cosmossdk.io/core/context"
+	coregas "cosmossdk.io/core/gas"
+	coreheader "cosmossdk.io/core/header"
+	"cosmossdk.io/x/authz"
+	"cosmossdk.io/x/authz/keeper"
+	banktype "cosmossdk.io/x/bank/types"
+
 	"github.com/cosmos/cosmos-sdk/baseapp"
+	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/codec"
 	cdctypes "github.com/cosmos/cosmos-sdk/codec/types"
 	simtestutil "github.com/cosmos/cosmos-sdk/testutil/sims"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
 	simtypes "github.com/cosmos/cosmos-sdk/types/simulation"
-	"github.com/cosmos/cosmos-sdk/x/auth/tx"
-	"github.com/cosmos/cosmos-sdk/x/authz"
-	"github.com/cosmos/cosmos-sdk/x/authz/keeper"
-	banktype "github.com/cosmos/cosmos-sdk/x/bank/types"
 	"github.com/cosmos/cosmos-sdk/x/simulation"
 )
 
@@ -27,9 +34,9 @@ var (
 
 // Simulation operation weights constants
 const (
-	OpWeightMsgGrant = "op_weight_msg_grant"   //nolint:gosec
-	OpWeightRevoke   = "op_weight_msg_revoke"  //nolint:gosec
-	OpWeightExec     = "op_weight_msg_execute" //nolint:gosec
+	OpWeightMsgGrant = "op_weight_msg_grant"
+	OpWeightRevoke   = "op_weight_msg_revoke"
+	OpWeightExec     = "op_weight_msg_execute"
 )
 
 // authz operations weights
@@ -44,6 +51,7 @@ func WeightedOperations(
 	registry cdctypes.InterfaceRegistry,
 	appParams simtypes.AppParams,
 	cdc codec.JSONCodec,
+	txGen client.TxConfig,
 	ak authz.AccountKeeper,
 	bk authz.BankKeeper,
 	k keeper.Keeper,
@@ -54,42 +62,44 @@ func WeightedOperations(
 		weightRevoke   int
 	)
 
-	appParams.GetOrGenerate(cdc, OpWeightMsgGrant, &weightMsgGrant, nil,
-		func(_ *rand.Rand) {
-			weightMsgGrant = WeightGrant
-		},
-	)
+	appParams.GetOrGenerate(OpWeightMsgGrant, &weightMsgGrant, nil, func(_ *rand.Rand) {
+		weightMsgGrant = WeightGrant
+	})
 
-	appParams.GetOrGenerate(cdc, OpWeightExec, &weightExec, nil,
-		func(_ *rand.Rand) {
-			weightExec = WeightExec
-		},
-	)
+	appParams.GetOrGenerate(OpWeightExec, &weightExec, nil, func(_ *rand.Rand) {
+		weightExec = WeightExec
+	})
 
-	appParams.GetOrGenerate(cdc, OpWeightRevoke, &weightRevoke, nil,
-		func(_ *rand.Rand) {
-			weightRevoke = WeightRevoke
-		},
-	)
+	appParams.GetOrGenerate(OpWeightRevoke, &weightRevoke, nil, func(_ *rand.Rand) {
+		weightRevoke = WeightRevoke
+	})
+
+	pCdc := codec.NewProtoCodec(registry)
 
 	return simulation.WeightedOperations{
 		simulation.NewWeightedOperation(
 			weightMsgGrant,
-			SimulateMsgGrant(codec.NewProtoCodec(registry), ak, bk, k),
+			SimulateMsgGrant(pCdc, txGen, ak, bk, k),
 		),
 		simulation.NewWeightedOperation(
 			weightExec,
-			SimulateMsgExec(codec.NewProtoCodec(registry), ak, bk, k, registry),
+			SimulateMsgExec(pCdc, txGen, ak, bk, k, registry),
 		),
 		simulation.NewWeightedOperation(
 			weightRevoke,
-			SimulateMsgRevoke(codec.NewProtoCodec(registry), ak, bk, k),
+			SimulateMsgRevoke(pCdc, txGen, ak, bk, k),
 		),
 	}
 }
 
 // SimulateMsgGrant generates a MsgGrant with random values.
-func SimulateMsgGrant(cdc *codec.ProtoCodec, ak authz.AccountKeeper, bk authz.BankKeeper, _ keeper.Keeper) simtypes.Operation {
+func SimulateMsgGrant(
+	cdc *codec.ProtoCodec,
+	txCfg client.TxConfig,
+	ak authz.AccountKeeper,
+	bk authz.BankKeeper,
+	_ keeper.Keeper,
+) simtypes.Operation {
 	return func(
 		r *rand.Rand, app *baseapp.BaseApp, ctx sdk.Context, accs []simtypes.Account, chainID string,
 	) (simtypes.OperationMsg, []simtypes.FutureOperation, error) {
@@ -102,7 +112,7 @@ func SimulateMsgGrant(cdc *codec.ProtoCodec, ak authz.AccountKeeper, bk authz.Ba
 
 		granterAcc := ak.GetAccount(ctx, granter.Address)
 		spendableCoins := bk.SpendableCoins(ctx, granter.Address)
-		fees, err := simtypes.RandomFees(r, ctx, spendableCoins)
+		fees, err := simtypes.RandomFees(r, spendableCoins)
 		if err != nil {
 			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgGrant, err.Error()), nil, err
 		}
@@ -114,16 +124,23 @@ func SimulateMsgGrant(cdc *codec.ProtoCodec, ak authz.AccountKeeper, bk authz.Ba
 
 		var expiration *time.Time
 		t1 := simtypes.RandTimestamp(r)
-		if !t1.Before(ctx.BlockTime()) {
+		if !t1.Before(ctx.HeaderInfo().Time) {
 			expiration = &t1
 		}
-		randomAuthz := generateRandomAuthorization(r, spendLimit)
+		randomAuthz := generateRandomAuthorization(r, spendLimit, ak.AddressCodec())
 
-		msg, err := authz.NewMsgGrant(granter.Address, grantee.Address, randomAuthz, expiration)
+		granterAddr, err := ak.AddressCodec().BytesToString(granter.Address)
+		if err != nil {
+			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgGrant, "could not get granter address"), nil, nil
+		}
+		granteeAddr, err := ak.AddressCodec().BytesToString(grantee.Address)
+		if err != nil {
+			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgGrant, "could not get grantee address"), nil, nil
+		}
+		msg, err := authz.NewMsgGrant(granterAddr, granteeAddr, randomAuthz, expiration)
 		if err != nil {
 			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgGrant, err.Error()), nil, err
 		}
-		txCfg := tx.NewTxConfig(cdc, tx.DefaultSignModes)
 		tx, err := simtestutil.GenSignedMockTx(
 			r,
 			txCfg,
@@ -143,13 +160,13 @@ func SimulateMsgGrant(cdc *codec.ProtoCodec, ak authz.AccountKeeper, bk authz.Ba
 		if err != nil {
 			return simtypes.NoOpMsg(authz.ModuleName, sdk.MsgTypeURL(msg), "unable to deliver tx"), nil, err
 		}
-		return simtypes.NewOperationMsg(msg, true, "", nil), nil, err
+		return simtypes.NewOperationMsg(msg, true, ""), nil, err
 	}
 }
 
-func generateRandomAuthorization(r *rand.Rand, spendLimit sdk.Coins) authz.Authorization {
+func generateRandomAuthorization(r *rand.Rand, spendLimit sdk.Coins, addressCodec address.Codec) authz.Authorization {
 	authorizations := make([]authz.Authorization, 2)
-	sendAuthz := banktype.NewSendAuthorization(spendLimit, nil)
+	sendAuthz := banktype.NewSendAuthorization(spendLimit, nil, addressCodec)
 	authorizations[0] = sendAuthz
 	authorizations[1] = authz.NewGenericAuthorization(sdk.MsgTypeURL(&banktype.MsgSend{}))
 
@@ -157,7 +174,13 @@ func generateRandomAuthorization(r *rand.Rand, spendLimit sdk.Coins) authz.Autho
 }
 
 // SimulateMsgRevoke generates a MsgRevoke with random values.
-func SimulateMsgRevoke(cdc *codec.ProtoCodec, ak authz.AccountKeeper, bk authz.BankKeeper, k keeper.Keeper) simtypes.Operation {
+func SimulateMsgRevoke(
+	cdc *codec.ProtoCodec,
+	txCfg client.TxConfig,
+	ak authz.AccountKeeper,
+	bk authz.BankKeeper,
+	k keeper.Keeper,
+) simtypes.Operation {
 	return func(
 		r *rand.Rand, app *baseapp.BaseApp, ctx sdk.Context, accs []simtypes.Account, chainID string,
 	) (simtypes.OperationMsg, []simtypes.FutureOperation, error) {
@@ -165,13 +188,16 @@ func SimulateMsgRevoke(cdc *codec.ProtoCodec, ak authz.AccountKeeper, bk authz.B
 		var grant authz.Grant
 		hasGrant := false
 
-		k.IterateGrants(ctx, func(granter, grantee sdk.AccAddress, g authz.Grant) bool {
+		err := k.IterateGrants(ctx, func(granter, grantee sdk.AccAddress, g authz.Grant) (bool, error) {
 			grant = g
 			granterAddr = granter
 			granteeAddr = grantee
 			hasGrant = true
-			return true
+			return true, nil
 		})
+		if err != nil {
+			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgRevoke, err.Error()), nil, err
+		}
 
 		if !hasGrant {
 			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgRevoke, "no grants"), nil, nil
@@ -183,7 +209,7 @@ func SimulateMsgRevoke(cdc *codec.ProtoCodec, ak authz.AccountKeeper, bk authz.B
 		}
 
 		spendableCoins := bk.SpendableCoins(ctx, granterAddr)
-		fees, err := simtypes.RandomFees(r, ctx, spendableCoins)
+		fees, err := simtypes.RandomFees(r, spendableCoins)
 		if err != nil {
 			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgRevoke, "fee error"), nil, err
 		}
@@ -193,8 +219,15 @@ func SimulateMsgRevoke(cdc *codec.ProtoCodec, ak authz.AccountKeeper, bk authz.B
 			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgRevoke, "authorization error"), nil, err
 		}
 
-		msg := authz.NewMsgRevoke(granterAddr, granteeAddr, a.MsgTypeURL())
-		txCfg := tx.NewTxConfig(cdc, tx.DefaultSignModes)
+		granterStrAddr, err := ak.AddressCodec().BytesToString(granterAddr)
+		if err != nil {
+			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgRevoke, "could not get granter address"), nil, nil
+		}
+		granteeStrAddr, err := ak.AddressCodec().BytesToString(granteeAddr)
+		if err != nil {
+			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgRevoke, "could not get grantee address"), nil, nil
+		}
+		msg := authz.NewMsgRevoke(granterStrAddr, granteeStrAddr, a.MsgTypeURL())
 		account := ak.GetAccount(ctx, granterAddr)
 		tx, err := simtestutil.GenSignedMockTx(
 			r,
@@ -216,12 +249,19 @@ func SimulateMsgRevoke(cdc *codec.ProtoCodec, ak authz.AccountKeeper, bk authz.B
 			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgRevoke, "unable to execute tx: "+err.Error()), nil, err
 		}
 
-		return simtypes.NewOperationMsg(&msg, true, "", nil), nil, nil
+		return simtypes.NewOperationMsg(&msg, true, ""), nil, nil
 	}
 }
 
 // SimulateMsgExec generates a MsgExec with random values.
-func SimulateMsgExec(cdc *codec.ProtoCodec, ak authz.AccountKeeper, bk authz.BankKeeper, k keeper.Keeper, unpacker cdctypes.AnyUnpacker) simtypes.Operation {
+func SimulateMsgExec(
+	cdc *codec.ProtoCodec,
+	txCfg client.TxConfig,
+	ak authz.AccountKeeper,
+	bk authz.BankKeeper,
+	k keeper.Keeper,
+	unpacker cdctypes.AnyUnpacker,
+) simtypes.Operation {
 	return func(
 		r *rand.Rand, app *baseapp.BaseApp, ctx sdk.Context, accs []simtypes.Account, chainID string,
 	) (simtypes.OperationMsg, []simtypes.FutureOperation, error) {
@@ -229,19 +269,18 @@ func SimulateMsgExec(cdc *codec.ProtoCodec, ak authz.AccountKeeper, bk authz.Ban
 		var granteeAddr sdk.AccAddress
 		var sendAuth *banktype.SendAuthorization
 		var err error
-		k.IterateGrants(ctx, func(granter, grantee sdk.AccAddress, grant authz.Grant) bool {
+		err = k.IterateGrants(ctx, func(granter, grantee sdk.AccAddress, grant authz.Grant) (bool, error) {
 			granterAddr = granter
 			granteeAddr = grantee
 			var a authz.Authorization
 			a, err = grant.GetAuthorization()
 			if err != nil {
-				return true
+				return true, err
 			}
 			var ok bool
 			sendAuth, ok = a.(*banktype.SendAuthorization)
-			return ok
+			return ok, nil
 		})
-
 		if err != nil {
 			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgExec, err.Error()), nil, err
 		}
@@ -270,9 +309,23 @@ func SimulateMsgExec(cdc *codec.ProtoCodec, ak authz.AccountKeeper, bk authz.Ban
 			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgExec, err.Error()), nil, nil
 		}
 
-		msg := []sdk.Msg{banktype.NewMsgSend(granterAddr, granteeAddr, coins)}
+		graStr, err := ak.AddressCodec().BytesToString(granterAddr)
+		if err != nil {
+			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgExec, err.Error()), nil, err
+		}
+		greStr, err := ak.AddressCodec().BytesToString(granteeAddr)
+		if err != nil {
+			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgExec, err.Error()), nil, err
+		}
 
-		_, err = sendAuth.Accept(ctx, msg[0])
+		msg := []sdk.Msg{banktype.NewMsgSend(graStr, greStr, coins)}
+
+		goCtx := context.WithValue(ctx.Context(), corecontext.EnvironmentContextKey, appmodule.Environment{
+			HeaderService: headerService{},
+			GasService:    mockGasService{},
+		})
+
+		_, err = sendAuth.Accept(goCtx, msg[0])
 		if err != nil {
 			if sdkerrors.ErrInsufficientFunds.Is(err) {
 				return simtypes.NoOpMsg(authz.ModuleName, TypeMsgExec, err.Error()), nil, nil
@@ -281,14 +334,13 @@ func SimulateMsgExec(cdc *codec.ProtoCodec, ak authz.AccountKeeper, bk authz.Ban
 
 		}
 
-		msgExec := authz.NewMsgExec(granteeAddr, msg)
+		msgExec := authz.NewMsgExec(greStr, msg)
 		granteeSpendableCoins := bk.SpendableCoins(ctx, granteeAddr)
-		fees, err := simtypes.RandomFees(r, ctx, granteeSpendableCoins)
+		fees, err := simtypes.RandomFees(r, granteeSpendableCoins)
 		if err != nil {
 			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgExec, "fee error"), nil, err
 		}
 
-		txCfg := tx.NewTxConfig(cdc, tx.DefaultSignModes)
 		granteeAcc := ak.GetAccount(ctx, granteeAddr)
 		tx, err := simtestutil.GenSignedMockTx(
 			r,
@@ -314,6 +366,28 @@ func SimulateMsgExec(cdc *codec.ProtoCodec, ak authz.AccountKeeper, bk authz.Ban
 		if err != nil {
 			return simtypes.NoOpMsg(authz.ModuleName, TypeMsgExec, "unmarshal error"), nil, err
 		}
-		return simtypes.NewOperationMsg(&msgExec, true, "success", nil), nil, nil
+		return simtypes.NewOperationMsg(&msgExec, true, "success"), nil, nil
 	}
+}
+
+type headerService struct{}
+
+func (h headerService) HeaderInfo(ctx context.Context) coreheader.Info {
+	return sdk.UnwrapSDKContext(ctx).HeaderInfo()
+}
+
+type mockGasService struct {
+	coregas.Service
+}
+
+func (m mockGasService) GasMeter(ctx context.Context) coregas.Meter {
+	return mockGasMeter{}
+}
+
+type mockGasMeter struct {
+	coregas.Meter
+}
+
+func (m mockGasMeter) Consume(amount coregas.Gas, descriptor string) error {
+	return nil
 }

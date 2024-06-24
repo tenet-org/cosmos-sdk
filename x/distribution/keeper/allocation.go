@@ -1,17 +1,21 @@
 package keeper
 
 import (
+	"context"
+	"errors"
+
+	"cosmossdk.io/collections"
+	"cosmossdk.io/core/comet"
+	"cosmossdk.io/core/event"
 	"cosmossdk.io/math"
-	abci "github.com/cometbft/cometbft/abci/types"
+	"cosmossdk.io/x/distribution/types"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/x/distribution/types"
-	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 )
 
 // AllocateTokens performs reward and fee distribution to all validators based
 // on the F1 fee distribution specification.
-func (k Keeper) AllocateTokens(ctx sdk.Context, totalPreviousPower int64, bondedVotes []abci.VoteInfo) {
+func (k Keeper) AllocateTokens(ctx context.Context, totalPreviousPower int64, bondedVotes []comet.VoteInfo) error {
 	// fetch and clear the collected fees for distribution, since this is
 	// called in BeginBlock, collected fees will be from the previous block
 	// (and distributed to the previous proposer)
@@ -20,23 +24,28 @@ func (k Keeper) AllocateTokens(ctx sdk.Context, totalPreviousPower int64, bonded
 	feesCollected := sdk.NewDecCoinsFromCoins(feesCollectedInt...)
 
 	// transfer collected fees to the distribution module account
-	err := k.bankKeeper.SendCoinsFromModuleToModule(ctx, k.feeCollectorName, types.ModuleName, feesCollectedInt)
-	if err != nil {
-		panic(err)
+	if err := k.bankKeeper.SendCoinsFromModuleToModule(ctx, k.feeCollectorName, types.ModuleName, feesCollectedInt); err != nil {
+		return err
 	}
 
-	// temporary workaround to keep CanWithdrawInvariant happy
-	// general discussions here: https://github.com/cosmos/cosmos-sdk/issues/2906#issuecomment-441867634
-	feePool := k.GetFeePool(ctx)
+	feePool, err := k.FeePool.Get(ctx)
+	if err != nil {
+		return err
+	}
+
 	if totalPreviousPower == 0 {
-		feePool.CommunityPool = feePool.CommunityPool.Add(feesCollected...)
-		k.SetFeePool(ctx, feePool)
-		return
+		if err := k.FeePool.Set(ctx, types.FeePool{DecimalPool: feePool.DecimalPool.Add(feesCollected...)}); err != nil {
+			return err
+		}
 	}
 
 	// calculate fraction allocated to validators
 	remaining := feesCollected
-	communityTax := k.GetCommunityTax(ctx)
+	communityTax, err := k.GetCommunityTax(ctx)
+	if err != nil {
+		return err
+	}
+
 	voteMultiplier := math.LegacyOneDec().Sub(communityTax)
 	feeMultiplier := feesCollected.MulDecTruncate(voteMultiplier)
 
@@ -46,7 +55,11 @@ func (k Keeper) AllocateTokens(ctx sdk.Context, totalPreviousPower int64, bonded
 	//
 	// Ref: https://github.com/cosmos/cosmos-sdk/pull/3099#discussion_r246276376
 	for _, vote := range bondedVotes {
-		validator := k.stakingKeeper.ValidatorByConsAddr(ctx, vote.Validator.Address)
+
+		validator, err := k.stakingKeeper.ValidatorByConsAddr(ctx, vote.Validator.Address)
+		if err != nil {
+			return err
+		}
 
 		// TODO: Consider micro-slashing for missing votes.
 		//
@@ -54,49 +67,108 @@ func (k Keeper) AllocateTokens(ctx sdk.Context, totalPreviousPower int64, bonded
 		powerFraction := math.LegacyNewDec(vote.Validator.Power).QuoTruncate(math.LegacyNewDec(totalPreviousPower))
 		reward := feeMultiplier.MulDecTruncate(powerFraction)
 
-		k.AllocateTokensToValidator(ctx, validator, reward)
+		if err = k.AllocateTokensToValidator(ctx, validator, reward); err != nil {
+			return err
+		}
+
 		remaining = remaining.Sub(reward)
 	}
+	// send to community pool and set remainder in fee pool
+	amt, re := remaining.TruncateDecimal()
+	if err := k.bankKeeper.SendCoinsFromModuleToModule(ctx, types.ModuleName, types.ProtocolPoolModuleName, amt); err != nil {
+		return err
+	}
 
-	// allocate community funding
-	feePool.CommunityPool = feePool.CommunityPool.Add(remaining...)
-	k.SetFeePool(ctx, feePool)
+	// set ToDistribute in protocolpool to keep track of continuous funds distribution
+	if err := k.poolKeeper.SetToDistribute(ctx, amt, k.GetAuthority()); err != nil { // TODO: this should be distribution module account
+		return err
+	}
+
+	if err := k.FeePool.Set(ctx, types.FeePool{DecimalPool: feePool.DecimalPool.Add(re...)}); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // AllocateTokensToValidator allocate tokens to a particular validator,
 // splitting according to commission.
-func (k Keeper) AllocateTokensToValidator(ctx sdk.Context, val stakingtypes.ValidatorI, tokens sdk.DecCoins) {
+func (k Keeper) AllocateTokensToValidator(ctx context.Context, val sdk.ValidatorI, tokens sdk.DecCoins) error {
 	// split tokens between validator and delegators according to commission
 	commission := tokens.MulDec(val.GetCommission())
 	shared := tokens.Sub(commission)
 
+	valBz, err := k.stakingKeeper.ValidatorAddressCodec().StringToBytes(val.GetOperator())
+	if err != nil {
+		return err
+	}
+
 	// update current commission
-	ctx.EventManager().EmitEvent(
-		sdk.NewEvent(
-			types.EventTypeCommission,
-			sdk.NewAttribute(sdk.AttributeKeyAmount, commission.String()),
-			sdk.NewAttribute(types.AttributeKeyValidator, val.GetOperator().String()),
-		),
-	)
-	currentCommission := k.GetValidatorAccumulatedCommission(ctx, val.GetOperator())
+	if err = k.EventService.EventManager(ctx).EmitKV(
+		types.EventTypeCommission,
+		event.NewAttribute(sdk.AttributeKeyAmount, commission.String()),
+		event.NewAttribute(types.AttributeKeyValidator, val.GetOperator()),
+	); err != nil {
+		return err
+	}
+	currentCommission, err := k.ValidatorsAccumulatedCommission.Get(ctx, valBz)
+	if err != nil && !errors.Is(err, collections.ErrNotFound) {
+		return err
+	}
+
 	currentCommission.Commission = currentCommission.Commission.Add(commission...)
-	k.SetValidatorAccumulatedCommission(ctx, val.GetOperator(), currentCommission)
+	err = k.ValidatorsAccumulatedCommission.Set(ctx, valBz, currentCommission)
+	if err != nil {
+		return err
+	}
 
 	// update current rewards
-	currentRewards := k.GetValidatorCurrentRewards(ctx, val.GetOperator())
+	currentRewards, err := k.ValidatorCurrentRewards.Get(ctx, valBz)
+	// if the rewards do not exist it's fine, we will just add to zero.
+	if err != nil && !errors.Is(err, collections.ErrNotFound) {
+		return err
+	}
+
 	currentRewards.Rewards = currentRewards.Rewards.Add(shared...)
-	k.SetValidatorCurrentRewards(ctx, val.GetOperator(), currentRewards)
+	err = k.ValidatorCurrentRewards.Set(ctx, valBz, currentRewards)
+	if err != nil {
+		return err
+	}
 
 	// update outstanding rewards
-	ctx.EventManager().EmitEvent(
-		sdk.NewEvent(
-			types.EventTypeRewards,
-			sdk.NewAttribute(sdk.AttributeKeyAmount, tokens.String()),
-			sdk.NewAttribute(types.AttributeKeyValidator, val.GetOperator().String()),
-		),
-	)
+	if err = k.EventService.EventManager(ctx).EmitKV(
+		types.EventTypeRewards,
+		event.NewAttribute(sdk.AttributeKeyAmount, tokens.String()),
+		event.NewAttribute(types.AttributeKeyValidator, val.GetOperator()),
+	); err != nil {
+		return err
+	}
 
-	outstanding := k.GetValidatorOutstandingRewards(ctx, val.GetOperator())
+	outstanding, err := k.ValidatorOutstandingRewards.Get(ctx, valBz)
+	if err != nil && !errors.Is(err, collections.ErrNotFound) {
+		return err
+	}
+
 	outstanding.Rewards = outstanding.Rewards.Add(tokens...)
-	k.SetValidatorOutstandingRewards(ctx, val.GetOperator(), outstanding)
+	return k.ValidatorOutstandingRewards.Set(ctx, valBz, outstanding)
+}
+
+// sendDecimalPoolToCommunityPool sends the decimal pool to the community pool
+// Any remainder stays in the decimal pool
+func (k Keeper) sendDecimalPoolToCommunityPool(ctx context.Context) error {
+	feePool, err := k.FeePool.Get(ctx)
+	if err != nil {
+		return err
+	}
+
+	if feePool.DecimalPool.IsZero() {
+		return nil
+	}
+
+	amt, re := feePool.DecimalPool.TruncateDecimal()
+	if err := k.bankKeeper.SendCoinsFromModuleToModule(ctx, types.ModuleName, types.ProtocolPoolModuleName, amt); err != nil {
+		return err
+	}
+
+	return k.FeePool.Set(ctx, types.FeePool{DecimalPool: re})
 }

@@ -17,7 +17,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/cosmos/cosmos-sdk/x/gov/client/cli"
+	"cosmossdk.io/x/gov/client/cli"
+
+	codectestutil "github.com/cosmos/cosmos-sdk/codec/testutil"
 )
 
 type st struct {
@@ -47,9 +49,10 @@ func TestPromptIntegerOverflow(t *testing.T) {
 
 			fin, fw := readline.NewFillableStdin(os.Stdin)
 			readline.Stdin = fin
-			fw.Write([]byte(overflowStr + "\n"))
+			_, err := fw.Write([]byte(overflowStr + "\n"))
+			assert.NoError(t, err)
 
-			v, err := cli.Prompt(st{}, "")
+			v, err := cli.Prompt(st{}, "", codectestutil.CodecOptions{}.GetAddressCodec())
 			assert.Equal(t, st{}, v, "expected a value of zero")
 			require.NotNil(t, err, "expected a report of an overflow")
 			require.Contains(t, err.Error(), "range")
@@ -78,9 +81,9 @@ func TestPromptParseInteger(t *testing.T) {
 
 			fin, fw := readline.NewFillableStdin(os.Stdin)
 			readline.Stdin = fin
-			fw.Write([]byte(tc.in + "\n"))
-
-			v, err := cli.Prompt(st{}, "")
+			_, err := fw.Write([]byte(tc.in + "\n"))
+			assert.NoError(t, err)
+			v, err := cli.Prompt(st{}, "", codectestutil.CodecOptions{}.GetAddressCodec())
 			assert.Nil(t, err, "expected a nil error")
 			assert.Equal(t, tc.want, v.I, "expected %d = %d", tc.want, v.I)
 		})

@@ -18,8 +18,12 @@ const DefaultConfigTemplate = `# This is a TOML config file.
 
 # The minimum gas prices a validator is willing to accept for processing a
 # transaction. A transaction's fees must meet the minimum of any denomination
-# specified in this config (e.g. 0.25token1;0.0001token2).
+# specified in this config (e.g. 0.25token1,0.0001token2).
 minimum-gas-prices = "{{ .BaseConfig.MinGasPrices }}"
+
+# The maximum gas a query coming over rest/grpc may consume.
+# If this is set to zero, the query can consume an unbounded amount of gas.
+query-gas-limit = "{{ .BaseConfig.QueryGasLimit }}"
 
 # default: the last 362880 states are kept, pruning at 10 block intervals
 # nothing: all historic states will be saved, nothing will be deleted (i.e. archiving node)
@@ -54,7 +58,7 @@ halt-time = {{ .BaseConfig.HaltTime }}
 # It has no bearing on application state pruning which is determined by the
 # "pruning-*" configurations.
 #
-# Note: CometBFT block pruning is dependant on this parameter in conjunction
+# Note: CometBFT block pruning is dependent on this parameter in conjunction
 # with the unbonding (safety threshold) period, state pruning and state sync
 # snapshot parameters to determine the correct minimum value of
 # ResponseCommit.RetainHeight.
@@ -77,14 +81,9 @@ iavl-cache-size = {{ .BaseConfig.IAVLCacheSize }}
 # Default is false.
 iavl-disable-fastnode = {{ .BaseConfig.IAVLDisableFastNode }}
 
-# IAVLLazyLoading enable/disable the lazy loading of iavl store.
-# Default is false.
-iavl-lazy-loading = {{ .BaseConfig.IAVLLazyLoading }}
-
 # AppDBBackend defines the database backend type to use for the application and snapshots DBs.
 # An empty string indicates that a fallback will be used.
-# First fallback is the deprecated compile-time types.DBBackend value.
-# Second fallback (if the types.DBBackend also isn't set), is the db-backend value set in CometBFT's config.toml.
+# The fallback is the db_backend value set in CometBFT's config.toml.
 app-db-backend = "{{ .BaseConfig.AppDBBackend }}"
 
 ###############################################################################
@@ -121,6 +120,17 @@ prometheus-retention-time = {{ .Telemetry.PrometheusRetentionTime }}
 global-labels = [{{ range $k, $v := .Telemetry.GlobalLabels }}
   ["{{index $v 0 }}", "{{ index $v 1}}"],{{ end }}
 ]
+
+# MetricsSink defines the type of metrics sink to use.
+metrics-sink = "{{ .Telemetry.MetricsSink }}"
+
+# StatsdAddr defines the address of a statsd server to send metrics to.
+# Only utilized if MetricsSink is set to "statsd" or "dogstatsd".
+statsd-addr = "{{ .Telemetry.StatsdAddr }}"
+
+# DatadogHostname defines the hostname to use when emitting metrics to
+# Datadog. Only utilized if MetricsSink is set to "dogstatsd".
+datadog-hostname = "{{ .Telemetry.DatadogHostname }}"
 
 ###############################################################################
 ###                           API Configuration                             ###
@@ -173,17 +183,6 @@ max-recv-msg-size = "{{ .GRPC.MaxRecvMsgSize }}"
 max-send-msg-size = "{{ .GRPC.MaxSendMsgSize }}"
 
 ###############################################################################
-###                        gRPC Web Configuration                           ###
-###############################################################################
-
-[grpc-web]
-
-# GRPCWebEnable defines if the gRPC-web should be enabled.
-# NOTE: gRPC must also be enabled, otherwise, this configuration is a no-op.
-# NOTE: gRPC-Web uses the same address as the API server.
-enable = {{ .GRPCWeb.Enable }}
-
-###############################################################################
 ###                        State Sync Configuration                         ###
 ###############################################################################
 
@@ -199,27 +198,30 @@ snapshot-interval = {{ .StateSync.SnapshotInterval }}
 snapshot-keep-recent = {{ .StateSync.SnapshotKeepRecent }}
 
 ###############################################################################
-###                         Store / State Streaming                         ###
+###                              State Streaming                            ###
 ###############################################################################
 
-[store]
-streamers = [{{ range .Store.Streamers }}{{ printf "%q, " . }}{{end}}]
+# Streaming allows nodes to stream state to external systems.
+[streaming]
 
-[streamers]
-[streamers.file]
-keys = [{{ range .Streamers.File.Keys }}{{ printf "%q, " . }}{{end}}]
-write_dir = "{{ .Streamers.File.WriteDir }}"
-prefix = "{{ .Streamers.File.Prefix }}"
+# streaming.abci specifies the configuration for the ABCI Listener streaming service.
+[streaming.abci]
 
-# output-metadata specifies if output the metadata file which includes the abci request/responses 
-# during processing the block.
-output-metadata = "{{ .Streamers.File.OutputMetadata }}"
+# List of kv store keys to stream out via gRPC.
+# The store key names MUST match the module's StoreKey name.
+#
+# Example:
+# ["acc", "bank", "gov", "staking", "mint"[,...]]
+# ["*"] to expose all keys.
+keys = [{{ range .Streaming.ABCI.Keys }}{{ printf "%q, " . }}{{end}}]
 
-# stop-node-on-error specifies if propagate the file streamer errors to consensus state machine.
-stop-node-on-error = "{{ .Streamers.File.StopNodeOnError }}"
+# The plugin name used for streaming via gRPC.
+# Streaming is only enabled if this is set.
+# Supported plugins: abci
+plugin = "{{ .Streaming.ABCI.Plugin }}"
 
-# fsync specifies if call fsync after writing the files.
-fsync = "{{ .Streamers.File.Fsync }}"
+# stop-node-on-err specifies whether to stop the node on message delivery error.
+stop-node-on-err = {{ .Streaming.ABCI.StopNodeOnErr }}
 
 ###############################################################################
 ###                         Mempool                                         ###
@@ -227,12 +229,12 @@ fsync = "{{ .Streamers.File.Fsync }}"
 
 [mempool]
 # Setting max-txs to 0 will allow for a unbounded amount of transactions in the mempool.
-# Setting max_txs to negative 1 (-1) will disable transactions from being inserted into the mempool.
+# Setting max_txs to negative 1 (-1) will disable transactions from being inserted into the mempool (no-op mempool).
 # Setting max_txs to a positive number (> 0) will limit the number of transactions in the mempool, by the specified amount.
 #
 # Note, this configuration only applies to SDK built-in app-side mempool
 # implementations.
-max-txs = "{{ .Mempool.MaxTxs }}"
+max-txs = {{ .Mempool.MaxTxs }}
 `
 
 var configTemplate *template.Template
@@ -241,14 +243,12 @@ func init() {
 	var err error
 
 	tmpl := template.New("appConfigFileTemplate")
-
 	if configTemplate, err = tmpl.Parse(DefaultConfigTemplate); err != nil {
 		panic(err)
 	}
 }
 
-// ParseConfig retrieves the default environment configuration for the
-// application.
+// ParseConfig retrieves the default environment configuration for the application.
 func ParseConfig(v *viper.Viper) (*Config, error) {
 	conf := DefaultConfig()
 	err := v.Unmarshal(conf)
@@ -256,33 +256,30 @@ func ParseConfig(v *viper.Viper) (*Config, error) {
 	return conf, err
 }
 
-// SetConfigTemplate sets the custom app config template for
-// the application
-func SetConfigTemplate(customTemplate string) {
+// SetConfigTemplate sets the custom app config template for the application.
+func SetConfigTemplate(customTemplate string) error {
 	var err error
 
 	tmpl := template.New("appConfigFileTemplate")
 
 	if configTemplate, err = tmpl.Parse(customTemplate); err != nil {
-		panic(err)
+		return err
 	}
+
+	return nil
 }
 
-// WriteConfigFile renders config using the template and writes it to
-// configFilePath.
-func WriteConfigFile(configFilePath string, config interface{}) {
+// WriteConfigFile renders config using the template and writes it to configFilePath.
+func WriteConfigFile(configFilePath string, config interface{}) error {
 	var buffer bytes.Buffer
 
 	if err := configTemplate.Execute(&buffer, config); err != nil {
-		panic(err)
+		return err
 	}
 
-	mustWriteFile(configFilePath, buffer.Bytes(), 0o644)
-}
-
-func mustWriteFile(filePath string, contents []byte, mode os.FileMode) {
-	if err := os.WriteFile(filePath, contents, mode); err != nil {
-		fmt.Printf(fmt.Sprintf("failed to write file: %v", err) + "\n")
-		os.Exit(1)
+	if err := os.WriteFile(configFilePath, buffer.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
 	}
+
+	return nil
 }

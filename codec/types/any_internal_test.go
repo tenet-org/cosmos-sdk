@@ -8,7 +8,7 @@ import (
 )
 
 type Dog struct {
-	Name string `protobuf:"bytes,1,opt,name=size,proto3" json:"size,omitempty"`
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 }
 
 func (d Dog) Greet() string { return d.Name }
@@ -17,7 +17,7 @@ func (d Dog) Greet() string { return d.Name }
 func (d *Dog) Reset()                  { d.Name = "" }
 func (d *Dog) String() string          { return d.Name }
 func (d *Dog) ProtoMessage()           {}
-func (d *Dog) XXX_MessageName() string { return "tests/dog" } //nolint:revive
+func (d *Dog) XXX_MessageName() string { return "tests/dog" }
 
 type Animal interface {
 	Greet() string
@@ -48,7 +48,7 @@ func TestAnyPackUnpack(t *testing.T) {
 	require.Equal(t, spot, animal)
 
 	// without cache
-	any.cachedValue = nil
+	any.ResetCachedValue()
 	err = registry.UnpackAny(any, &animal)
 	require.NoError(t, err)
 	require.Equal(t, spot, animal)

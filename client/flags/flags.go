@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 
-	cmtcli "github.com/cometbft/cometbft/libs/cli"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
@@ -36,8 +35,6 @@ const (
 	// SignModeDirectAux is the value of the --sign-mode flag for SIGN_MODE_DIRECT_AUX
 	SignModeDirectAux = "direct-aux"
 	// SignModeTextual is the value of the --sign-mode flag for SIGN_MODE_TEXTUAL.
-	// Choosing this flag will result in an error for now, as Textual should be
-	// used only for TESTING purposes for now.
 	SignModeTextual = "textual"
 	// SignModeEIP191 is the value of the --sign-mode flag for SIGN_MODE_EIP_191
 	SignModeEIP191 = "eip-191"
@@ -45,7 +42,7 @@ const (
 
 // List of CLI flags
 const (
-	FlagHome             = cmtcli.HomeFlag
+	FlagHome             = "home"
 	FlagKeyringDir       = "keyring-dir"
 	FlagUseLedger        = "ledger"
 	FlagChainID          = "chain-id"
@@ -77,6 +74,8 @@ const (
 	FlagOffset           = "offset"
 	FlagCountTotal       = "count-total"
 	FlagTimeoutHeight    = "timeout-height"
+	FlagUnordered        = "unordered"
+	FlagKeyAlgorithm     = "algo"
 	FlagKeyType          = "key-type"
 	FlagFeePayer         = "fee-payer"
 	FlagFeeGranter       = "fee-granter"
@@ -86,11 +85,17 @@ const (
 	FlagInitHeight       = "initial-height"
 	// FlagOutput is the flag to set the output format.
 	// This differs from FlagOutputDocument that is used to set the output file.
-	FlagOutput = cmtcli.OutputFlag
-
+	FlagOutput = "output"
 	// Logging flags
-	FlagLogLevel  = "log_level"
-	FlagLogFormat = "log_format"
+	FlagLogLevel   = "log_level"
+	FlagLogFormat  = "log_format"
+	FlagLogNoColor = "log_no_color"
+)
+
+// List of supported output formats
+const (
+	OutputFormatJSON = "json"
+	OutputFormatText = "text"
 )
 
 // LineBreak can be included in a command list to provide a blank line
@@ -113,13 +118,15 @@ func AddQueryFlagsToCmd(cmd *cobra.Command) {
 // AddTxFlagsToCmd adds common flags to a module tx command.
 func AddTxFlagsToCmd(cmd *cobra.Command) {
 	f := cmd.Flags()
-	f.StringP(FlagOutput, "o", "json", "Output format (text|json)")
-	f.String(FlagFrom, "", "Name or address of private key with which to sign")
+	f.StringP(FlagOutput, "o", OutputFormatJSON, "Output format (text|json)")
+	if cmd.Flag(FlagFrom) == nil { // avoid flag redefinition when it's already been added by AutoCLI
+		f.String(FlagFrom, "", "Name or address of private key with which to sign")
+	}
 	f.Uint64P(FlagAccountNumber, "a", 0, "The account number of the signing account (offline mode only)")
 	f.Uint64P(FlagSequence, "s", 0, "The sequence number of the signing account (offline mode only)")
 	f.String(FlagNote, "", "Note to add a description to the transaction (previously --memo)")
 	f.String(FlagFees, "", "Fees to pay along with transaction; eg: 10uatom")
-	f.String(FlagGasPrices, "", "Gas prices in decimal format to determine the transaction fee (e.g. 0.1uatom)")
+	f.String(FlagGasPrices, "", "Determine the transaction fee by multiplying max gas units by gas prices (e.g. 0.1uatom), rounding up to nearest denom unit")
 	f.String(FlagNode, "tcp://localhost:26657", "<host>:<port> to CometBFT rpc interface for this chain")
 	f.Bool(FlagUseLedger, false, "Use a connected Ledger device")
 	f.Float64(FlagGasAdjustment, DefaultGasAdjustment, "adjustment factor to be multiplied against the estimate returned by the tx simulation; if the gas limit is set manually this flag is ignored ")
@@ -128,8 +135,9 @@ func AddTxFlagsToCmd(cmd *cobra.Command) {
 	f.Bool(FlagGenerateOnly, false, "Build an unsigned transaction and write it to STDOUT (when enabled, the local Keybase only accessed when providing a key name)")
 	f.Bool(FlagOffline, false, "Offline mode (does not allow any online functionality)")
 	f.BoolP(FlagSkipConfirmation, "y", false, "Skip tx broadcasting prompt confirmation")
-	f.String(FlagSignMode, "", "Choose sign mode (direct|amino-json|direct-aux), this is an advanced feature")
+	f.String(FlagSignMode, "", "Choose sign mode (direct|amino-json|direct-aux|textual), this is an advanced feature")
 	f.Uint64(FlagTimeoutHeight, 0, "Set a block timeout height to prevent the tx from being committed past a certain height")
+	f.Bool(FlagUnordered, false, "Enable unordered transaction delivery; must be used in conjunction with --timeout-height")
 	f.String(FlagFeePayer, "", "Fee payer pays fees for the transaction instead of deducting from the signer")
 	f.String(FlagFeeGranter, "", "Fee granter grants fees for the transaction")
 	f.String(FlagTip, "", "Tip is the amount that is going to be transferred to the fee payer on the target chain. This flag is only valid when used with --aux, and is ignored if the target chain didn't enable the TipDecorator")

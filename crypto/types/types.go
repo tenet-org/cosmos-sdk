@@ -2,7 +2,7 @@ package types
 
 import (
 	cmtcrypto "github.com/cometbft/cometbft/crypto"
-	proto "github.com/cosmos/gogoproto/proto"
+	"github.com/cosmos/gogoproto/proto"
 )
 
 // PubKey defines a public key and extends proto.Message.
@@ -11,7 +11,7 @@ type PubKey interface {
 
 	Address() Address
 	Bytes() []byte
-	VerifySignature(msg []byte, sig []byte) bool
+	VerifySignature(msg, sig []byte) bool
 	Equals(PubKey) bool
 	Type() string
 }

@@ -4,16 +4,17 @@ import (
 	"encoding/json"
 	"testing"
 
-	"cosmossdk.io/depinject"
-	proto "github.com/cosmos/gogoproto/proto"
+	"github.com/cosmos/gogoproto/proto"
 	"github.com/stretchr/testify/require"
 
-	"github.com/cosmos/cosmos-sdk/codec"
+	"cosmossdk.io/x/auth"
+	"cosmossdk.io/x/auth/types"
+
+	codectestutil "github.com/cosmos/cosmos-sdk/codec/testutil"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	"github.com/cosmos/cosmos-sdk/crypto/keys/ed25519"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/x/auth/testutil"
-	"github.com/cosmos/cosmos-sdk/x/auth/types"
+	moduletestutil "github.com/cosmos/cosmos-sdk/types/module/testutil"
 )
 
 func TestSanitize(t *testing.T) {
@@ -54,8 +55,8 @@ func TestValidateGenesisDuplicateAccounts(t *testing.T) {
 }
 
 func TestGenesisAccountIterator(t *testing.T) {
-	var cdc codec.Codec
-	depinject.Inject(testutil.AppConfig, &cdc)
+	encodingConfig := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, auth.AppModule{})
+	cdc := encodingConfig.Codec
 
 	acc1 := types.NewBaseAccountWithAddress(sdk.AccAddress(addr1))
 	acc2 := types.NewBaseAccountWithAddress(sdk.AccAddress(addr2))

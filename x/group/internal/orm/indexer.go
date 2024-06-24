@@ -1,11 +1,9 @@
 package orm
 
 import (
-	storetypes "cosmossdk.io/store/types"
-
+	storetypes "cosmossdk.io/core/store"
 	errorsmod "cosmossdk.io/errors"
-
-	"github.com/cosmos/cosmos-sdk/x/group/errors"
+	"cosmossdk.io/x/group/errors"
 )
 
 // IndexerFunc creates one or multiple index keys for the source object.
@@ -83,7 +81,9 @@ func (i Indexer) OnDelete(store storetypes.KVStore, rowID RowID, value interface
 		if err != nil {
 			return err
 		}
-		store.Delete(indexKey)
+		if err := store.Delete(indexKey); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -107,7 +107,9 @@ func (i Indexer) OnUpdate(store storetypes.KVStore, rowID RowID, newValue, oldVa
 		if err != nil {
 			return err
 		}
-		store.Delete(indexKey)
+		if err := store.Delete(indexKey); err != nil {
+			return err
+		}
 	}
 	newKeys, err := difference(newSecIdxKeys, oldSecIdxKeys)
 	if err != nil {
@@ -140,13 +142,15 @@ func uniqueKeysAddFunc(store storetypes.KVStore, secondaryIndexKey interface{}, 
 		return err
 	}
 
-	store.Set(indexKey, []byte{})
-	return nil
+	return store.Set(indexKey, []byte{})
 }
 
 // checkUniqueIndexKey checks that the given secondary index key is unique
 func checkUniqueIndexKey(store storetypes.KVStore, secondaryIndexKeyBytes []byte) error {
-	it := store.Iterator(PrefixRange(secondaryIndexKeyBytes))
+	it, err := store.Iterator(PrefixRange(secondaryIndexKeyBytes))
+	if err != nil {
+		return err
+	}
 	defer it.Close()
 	if it.Valid() {
 		return errors.ErrORMUniqueConstraint
@@ -172,13 +176,12 @@ func multiKeyAddFunc(store storetypes.KVStore, secondaryIndexKey interface{}, ro
 		return errorsmod.Wrap(errors.ErrORMInvalidArgument, "empty index key")
 	}
 
-	store.Set(encodedKey, []byte{})
-	return nil
+	return store.Set(encodedKey, []byte{})
 }
 
 // difference returns the list of elements that are in a but not in b.
-func difference(a []interface{}, b []interface{}) ([]interface{}, error) {
-	set := make(map[interface{}]struct{}, len(b))
+func difference(a, b []interface{}) ([]interface{}, error) {
+	set := make(map[string]struct{}, len(b))
 	for _, v := range b {
 		bt, err := keyPartBytes(v, true)
 		if err != nil {

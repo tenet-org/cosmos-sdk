@@ -1,24 +1,37 @@
 package keeper
 
 import (
-	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/x/mint/types"
+	"context"
+
+	"cosmossdk.io/x/mint/types"
 )
 
 // InitGenesis new mint genesis
-func (keeper Keeper) InitGenesis(ctx sdk.Context, ak types.AccountKeeper, data *types.GenesisState) {
-	keeper.SetMinter(ctx, data.Minter)
+func (keeper Keeper) InitGenesis(ctx context.Context, ak types.AccountKeeper, data *types.GenesisState) error {
+	if err := keeper.Minter.Set(ctx, data.Minter); err != nil {
+		return err
+	}
 
-	if err := keeper.SetParams(ctx, data.Params); err != nil {
-		panic(err)
+	if err := keeper.Params.Set(ctx, data.Params); err != nil {
+		return err
 	}
 
 	ak.GetModuleAccount(ctx, types.ModuleName)
+
+	return nil
 }
 
 // ExportGenesis returns a GenesisState for a given context and keeper.
-func (keeper Keeper) ExportGenesis(ctx sdk.Context) *types.GenesisState {
-	minter := keeper.GetMinter(ctx)
-	params := keeper.GetParams(ctx)
-	return types.NewGenesisState(minter, params)
+func (keeper Keeper) ExportGenesis(ctx context.Context) (*types.GenesisState, error) {
+	minter, err := keeper.Minter.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	params, err := keeper.Params.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return types.NewGenesisState(minter, params), nil
 }

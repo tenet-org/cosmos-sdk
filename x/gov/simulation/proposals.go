@@ -3,9 +3,11 @@ package simulation
 import (
 	"math/rand"
 
+	coreaddress "cosmossdk.io/core/address"
+	"cosmossdk.io/x/gov/types/v1beta1"
+
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	simtypes "github.com/cosmos/cosmos-sdk/types/simulation"
-	"github.com/cosmos/cosmos-sdk/x/gov/types/v1beta1"
 	"github.com/cosmos/cosmos-sdk/x/simulation"
 )
 
@@ -25,13 +27,13 @@ func ProposalMsgs() []simtypes.WeightedProposalMsg {
 
 // SimulateTextProposal returns a random text proposal content.
 // A text proposal is a proposal that contains no msgs.
-func SimulateTextProposal(r *rand.Rand, _ sdk.Context, _ []simtypes.Account) sdk.Msg {
-	return nil
+func SimulateTextProposal(r *rand.Rand, _ []simtypes.Account, _ coreaddress.Codec) (sdk.Msg, error) {
+	return nil, nil
 }
 
 // ProposalContents defines the module weighted proposals' contents
 //
-//nolint:staticcheck
+//nolint:staticcheck // used for legacy testing
 func ProposalContents() []simtypes.WeightedProposalContent {
 	return []simtypes.WeightedProposalContent{
 		simulation.NewWeightedProposalContent(
@@ -44,7 +46,7 @@ func ProposalContents() []simtypes.WeightedProposalContent {
 
 // SimulateTextProposalContent returns a random text proposal content.
 //
-//nolint:staticcheck
+//nolint:staticcheck // used for legacy testing
 func SimulateLegacyTextProposalContent(r *rand.Rand, _ sdk.Context, _ []simtypes.Account) simtypes.Content {
 	return v1beta1.NewTextProposal(
 		simtypes.RandStringOfLength(r, 140),

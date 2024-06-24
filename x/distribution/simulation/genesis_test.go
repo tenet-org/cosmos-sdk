@@ -8,13 +8,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	sdkmath "cosmossdk.io/math"
+	"cosmossdk.io/x/distribution/simulation"
+	"cosmossdk.io/x/distribution/types"
+
 	"github.com/cosmos/cosmos-sdk/codec"
+	"github.com/cosmos/cosmos-sdk/codec/testutil"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
-	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/module"
 	simtypes "github.com/cosmos/cosmos-sdk/types/simulation"
-	"github.com/cosmos/cosmos-sdk/x/distribution/simulation"
-	"github.com/cosmos/cosmos-sdk/x/distribution/types"
 )
 
 // TestRandomizedGenState tests the normal scenario of applying RandomizedGenState.
@@ -22,17 +23,20 @@ import (
 func TestRandomizedGenState(t *testing.T) {
 	interfaceRegistry := codectypes.NewInterfaceRegistry()
 	cdc := codec.NewProtoCodec(interfaceRegistry)
+	cdcOpts := testutil.CodecOptions{}
 	s := rand.NewSource(1)
 	r := rand.New(s)
 
 	simState := module.SimulationState{
-		AppParams:    make(simtypes.AppParams),
-		Cdc:          cdc,
-		Rand:         r,
-		NumBonded:    3,
-		Accounts:     simtypes.RandomAccounts(r, 3),
-		InitialStake: sdkmath.NewInt(1000),
-		GenState:     make(map[string]json.RawMessage),
+		AppParams:      make(simtypes.AppParams),
+		Cdc:            cdc,
+		AddressCodec:   cdcOpts.GetAddressCodec(),
+		ValidatorCodec: cdcOpts.GetValidatorCodec(),
+		Rand:           r,
+		NumBonded:      3,
+		Accounts:       simtypes.RandomAccounts(r, 3),
+		InitialStake:   sdkmath.NewInt(1000),
+		GenState:       make(map[string]json.RawMessage),
 	}
 
 	simulation.RandomizedGenState(&simState)
@@ -40,10 +44,8 @@ func TestRandomizedGenState(t *testing.T) {
 	var distrGenesis types.GenesisState
 	simState.Cdc.MustUnmarshalJSON(simState.GenState[types.ModuleName], &distrGenesis)
 
-	dec1, _ := sdk.NewDecFromStr("0.210000000000000000")
+	dec1, _ := sdkmath.LegacyNewDecFromStr("0.210000000000000000")
 
-	require.Equal(t, sdk.ZeroDec(), distrGenesis.Params.BaseProposerReward)  //nolint:staticcheck
-	require.Equal(t, sdk.ZeroDec(), distrGenesis.Params.BonusProposerReward) //nolint:staticcheck
 	require.Equal(t, dec1, distrGenesis.Params.CommunityTax)
 	require.Equal(t, true, distrGenesis.Params.WithdrawAddrEnabled)
 	require.Len(t, distrGenesis.DelegatorStartingInfos, 0)
@@ -75,6 +77,8 @@ func TestRandomizedGenState1(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
+
 		require.Panicsf(t, func() { simulation.RandomizedGenState(&tt.simState) }, tt.panicMsg)
 	}
 }

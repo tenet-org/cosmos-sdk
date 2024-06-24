@@ -3,15 +3,19 @@ package common
 import (
 	"testing"
 
-	"github.com/cosmos/cosmos-sdk/codec/legacy"
-
 	"github.com/stretchr/testify/require"
 
 	"github.com/cosmos/cosmos-sdk/client"
+	"github.com/cosmos/cosmos-sdk/codec/legacy"
+	codectestutil "github.com/cosmos/cosmos-sdk/codec/testutil"
 )
 
 func TestQueryDelegationRewardsAddrValidation(t *testing.T) {
-	clientCtx := client.Context{}.WithLegacyAmino(legacy.Cdc)
+	cdcOpts := codectestutil.CodecOptions{}
+	clientCtx := client.Context{}.
+		WithLegacyAmino(legacy.Cdc).
+		WithAddressCodec(cdcOpts.GetAddressCodec()).
+		WithValidatorAddressCodec(cdcOpts.GetValidatorCodec())
 
 	type args struct {
 		delAddr string

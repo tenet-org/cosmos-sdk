@@ -4,21 +4,19 @@ import (
 	"context"
 	"time"
 
+	banktypes "cosmossdk.io/x/bank/types"
+	"cosmossdk.io/x/group"
+
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
-	"github.com/cosmos/cosmos-sdk/x/group"
 )
 
 func (s *TestSuite) TestTally() {
-	addrs := s.addrs
-	addr2 := addrs[1]
-
 	msgSend1 := &banktypes.MsgSend{
-		FromAddress: s.groupPolicyAddr.String(),
-		ToAddress:   addr2.String(),
+		FromAddress: s.groupPolicyStrAddr,
+		ToAddress:   s.addrsStr[1],
 		Amount:      sdk.Coins{sdk.NewInt64Coin("test", 100)},
 	}
-	proposers := []string{addr2.String()}
+	proposers := []string{s.addrsStr[1]}
 
 	specs := map[string]struct {
 		srcBlockTime   time.Time

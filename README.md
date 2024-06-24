@@ -2,7 +2,7 @@
   <h1> Cosmos SDK </h1>
 </div>
 
-![banner](docs/static/img/banner.jpg)
+![banner](https://github.com/cosmos/cosmos-sdk-docs/blob/main/static/img/banner.jpg)
 
 <div align="center">
   <a href="https://github.com/cosmos/cosmos-sdk/blob/main/LICENSE">
@@ -22,25 +22,25 @@
   </a>
 </div>
 <div align="center">
-  <a href="https://discord.gg/AzefAFd">
+  <a href="https://discord.gg/interchain">
     <img alt="Discord" src="https://img.shields.io/discord/669268347736686612.svg" />
   </a>
   <a href="https://sourcegraph.com/github.com/cosmos/cosmos-sdk?badge">
     <img alt="Imported by" src="https://sourcegraph.com/github.com/cosmos/cosmos-sdk/-/badge.svg" />
   </a>
     <img alt="Sims" src="https://github.com/cosmos/cosmos-sdk/workflows/Sims/badge.svg" />
-    <img alt="Lint Satus" src="https://github.com/cosmos/cosmos-sdk/workflows/Lint/badge.svg" />
+    <img alt="Lint Status" src="https://github.com/cosmos/cosmos-sdk/workflows/Lint/badge.svg" />
 </div>
 
 The Cosmos SDK is a framework for building blockchain applications. [CometBFT (BFT Consensus)](https://github.com/cometbft/cometbft) and the Cosmos SDK are written in the Go programming language. Cosmos SDK is used to build [Gaia](https://github.com/cosmos/gaia), the implementation of the Cosmos Hub.
 
 **WARNING**: The Cosmos SDK has mostly stabilized, but we are still making some breaking changes.
 
-**Note**: Requires [Go 1.20+](https://go.dev/dl)
+**Note**: Always use the latest maintained [Go](https://go.dev/dl) version for building Cosmos SDK applications.
 
 ## Quick Start
 
-To learn how the Cosmos SDK works from a high-level perspective, see the Cosmos SDK [High-Level Intro](https://docs.cosmos.network/main/intro/overview.html).
+To learn how the Cosmos SDK works from a high-level perspective, see the Cosmos SDK [High-Level Intro](https://docs.cosmos.network/v0.50/learn/intro/overview).
 
 If you want to get started quickly and learn how to build on top of Cosmos SDK, visit [Cosmos SDK Tutorials](https://tutorials.cosmos.network). You can also fork the tutorial's repository to get started building your own Cosmos SDK application.
 
@@ -49,24 +49,58 @@ For more information, see the [Cosmos SDK Documentation](https://docs.cosmos.net
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for details on how to contribute and participate in our [dev calls](./CONTRIBUTING.md#teams-dev-calls).
-If you want to follow the updates or learn more about the latest design then join our [Discord](https://discord.com/invite/cosmosnetwork).
+If you want to follow the updates or learn more about the latest design then join our [Discord](https://discord.gg/interchain).
 
 ## Tools and Frameworks
 
 The Cosmos ecosystem is vast.
 [Awesome Cosmos](https://github.com/cosmos/awesome-cosmos) is a community-curated list of notable frameworks, modules and tools.
 
-### Cosmos Hub Mainnet
-
-The Cosmos Hub application, `gaia`, has its own [cosmos/gaia repository](https://github.com/cosmos/gaia). Go there to join the Cosmos Hub mainnet and more.
-
 ### Inter-Blockchain Communication (IBC)
 
 The IBC module for the Cosmos SDK has its own [cosmos/ibc-go repository](https://github.com/cosmos/ibc-go). Go there to build and integrate with the IBC module.
 
-### Ignite CLI
+### Version Matrix
 
-Ignite CLI is the all-in-one platform to build, launch, and maintain any crypto application on a sovereign and secured blockchain. If you are building a new app or a new module, use [Ignite CLI](https://github.com/ignite/cli) to get started and speed up development.
+The version matrix below shows which versions of the Cosmos SDK, modules and libraries are compatible with each other.
+
+#### Core Dependencies
+
+Core Dependencies are the core libraries that an application may depend on.
+
+> Note: the ❌ signals that the version of the Cosmos SDK does not need to import the dependency.
+
+| Cosmos SDK | cosmossdk.io/core | cosmossdk.io/api | cosmossdk.io/math | cosmossdk.io/errors | cosmossdk.io/depinject | cosmossdk.io/log | cosmossdk.io/store |
+| ---------- | ----------------- | ---------------- | ----------------- | ------------------- | ---------------------- | ---------------- | ------------------ |
+| 0.50.z     | 0.11.z            | 0.7.z            | 1.y.z             | 1.y.z               | 1.y.z                  | 1.y.z            | 1.y.z              |
+| 0.47.z     | 0.5.z             | 0.3.z            | 1.y.z             | 1.y.z               | 1.y.z                  | 1.y.z            | ❌                 |
+| 0.46.z     | ❌                | ❌               | 1.y.z             | 1.y.z               | ❌                     | ❌               | ❌                 |
+
+#### Module Dependencies
+
+Module Dependencies are the modules that an application may depend on and which version of the Cosmos SDK they are compatible with.
+
+> Note: The version table only goes back to 0.50.x, this is due to the reason that modules were not spun out into their own go.mods until 0.50.z. ❌ signals that the module was not spun out into its own go.mod file.
+
+| Cosmos SDK                  | 0.50.z    | 0.y.z |
+| --------------------------- | --------- | ----- |
+| cosmossdk.io/x/auth         | ❌        |       |
+| cosmossdk.io/x/accounts     | ❌        |       |
+| cosmossdk.io/x/bank         | ❌        |       |
+| cosmossdk.io/x/circuit      | 0.1.z     |       |
+| cosmossdk.io/x/consensus    | ❌        |       |
+| cosmossdk.io/x/distribution | ❌        |       |
+| cosmossdk.io/x/evidence     | 0.1.z     |       |
+| cosmossdk.io/x/feegrant     | 0.1.z     |       |
+| cosmossdk.io/x/gov          | ❌        |       |
+| cosmossdk.io/x/group        | ❌        |       |
+| cosmossdk.io/x/mint         | ❌        |       |
+| cosmossdk.io/x/nft          | 0.1.z     |       |
+| cosmossdk.io/x/protcolpool  | ❌        |       |
+| cosmossdk.io/x/slashing     | ❌        |       |
+| cosmossdk.io/x/staking      | ❌        |       |
+| cosmossdk.io/x/tx           | =< 0.13.z |       |
+| cosmossdk.io/x/upgrade      | 0.1.z     |       |
 
 ## Disambiguation
 

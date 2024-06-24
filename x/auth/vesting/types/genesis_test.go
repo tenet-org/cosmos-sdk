@@ -5,9 +5,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	authtypes "cosmossdk.io/x/auth/types"
+
 	"github.com/cosmos/cosmos-sdk/crypto/keys/ed25519"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 )
 
 var (
@@ -21,7 +22,8 @@ var (
 func TestValidateGenesisInvalidAccounts(t *testing.T) {
 	acc1 := authtypes.NewBaseAccountWithAddress(sdk.AccAddress(addr1))
 	acc1Balance := sdk.NewCoins(sdk.NewInt64Coin(sdk.DefaultBondDenom, 150))
-	baseVestingAcc := NewBaseVestingAccount(acc1, acc1Balance, 1548775410)
+	baseVestingAcc, err := NewBaseVestingAccount(acc1, acc1Balance, 1548775410)
+	require.NoError(t, err)
 
 	// invalid delegated vesting
 	baseVestingAcc.DelegatedVesting = acc1Balance.Add(acc1Balance...)

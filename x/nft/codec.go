@@ -1,15 +1,16 @@
 package nft
 
 import (
-	types "github.com/cosmos/cosmos-sdk/codec/types"
-	sdk "github.com/cosmos/cosmos-sdk/types"
+	"cosmossdk.io/core/registry"
+	coretransaction "cosmossdk.io/core/transaction"
+
 	"github.com/cosmos/cosmos-sdk/types/msgservice"
 )
 
 // RegisterInterfaces registers the interfaces types with the interface registry.
-func RegisterInterfaces(registry types.InterfaceRegistry) {
-	registry.RegisterImplementations((*sdk.Msg)(nil),
+func RegisterInterfaces(registrar registry.InterfaceRegistrar) {
+	registrar.RegisterImplementations((*coretransaction.Msg)(nil),
 		&MsgSend{},
 	)
-	msgservice.RegisterMsgServiceDesc(registry, &_Msg_serviceDesc)
+	msgservice.RegisterMsgServiceDesc(registrar, &_Msg_serviceDesc)
 }

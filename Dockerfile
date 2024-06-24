@@ -9,20 +9,41 @@
 # Client: (Note the simapp binary always looks at ~/.simapp we can bind to different local storage)
 # > docker run -it -p 26657:26657 -p 26656:26656 -v ~/.simappcli:/root/.simapp simapp simd keys add foo
 # > docker run -it -p 26657:26657 -p 26656:26656 -v ~/.simappcli:/root/.simapp simapp simd keys list
-# TODO: demo connecting rest-server (or is this in server now?)
+#
+# This image is pushed to the GHCR as https://ghcr.io/cosmos/simapp
 
-# bullseye already comes with build dependencies, so we don't need anything extra to install
-FROM --platform=$BUILDPLATFORM golang:1.20-bullseye AS build-env
+FROM golang:1.22-alpine AS build-env
+
+# Install minimum necessary dependencies
+ENV PACKAGES curl make git libc-dev bash gcc linux-headers eudev-dev
+RUN apk add --no-cache $PACKAGES
 
 # Set working directory for the build
 WORKDIR /go/src/github.com/cosmos/cosmos-sdk
 
 # optimization: if go.sum didn't change, docker will use cached image
 COPY go.mod go.sum ./
+COPY math/go.mod math/go.sum ./math/
+COPY api/go.mod api/go.sum ./api/
+COPY core/go.mod core/go.sum ./core/
 COPY collections/go.mod collections/go.sum ./collections/
 COPY store/go.mod store/go.sum ./store/
+COPY x/accounts/go.mod x/accounts/go.sum ./x/accounts/
+COPY x/tx/go.mod x/tx/go.sum /x/tx/
+COPY x/protocolpool/go.mod x/protocolpool/go.sum ./x/protocolpool/
+COPY x/gov/go.mod x/gov/go.sum ./x/gov/
+COPY x/distribution/go.mod x/distribution/go.sum ./x/distribution/
+COPY x/slashing/go.mod x/slashing/go.sum ./x/slashing/
+COPY x/staking/go.mod x/staking/go.sum ./x/staking/
+COPY x/auth/go.mod x/auth/go.sum ./x/auth/
+COPY x/authz/go.mod x/authz/go.sum ./x/authz/
+COPY x/bank/go.mod x/bank/go.sum ./x/bank/
+COPY x/mint/go.mod x/mint/go.sum ./x/mint/
+COPY x/tx/go.mod x/tx/go.sum ./x/tx/
+COPY x/consensus/go.mod x/consensus/go.sum ./x/consensus/
+COPY depinject/go.mod depinject/go.sum ./depinject/
+COPY core/testing/go.mod core/testing/go.sum ./core/testing/
 COPY log/go.mod log/go.sum ./log/
-
 RUN go mod download
 
 # Add source files
@@ -35,15 +56,17 @@ ARG TARGETOS TARGETARCH
 # install simapp, remove packages
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH make build
 
-
-# Final image, without build artifacts. `/base` already contains openssl, glibc and all required libs to start an app
-FROM gcr.io/distroless/base
+# Use alpine:3 as a base image
+FROM alpine:3
 
 EXPOSE 26656 26657 1317 9090
 # Run simd by default, omit entrypoint to ease using container with simcli
 CMD ["simd"]
 STOPSIGNAL SIGTERM
 WORKDIR /root
+
+# Install minimum necessary dependencies
+RUN apk add --no-cache curl make bash jq sed
 
 # Copy over binaries from the build-env
 COPY --from=build-env /go/src/github.com/cosmos/cosmos-sdk/build/simd /usr/bin/simd

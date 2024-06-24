@@ -13,7 +13,7 @@ var (
 	_ types.KVStore   = (*Store)(nil)
 )
 
-// Store is a wrapper for a MemDB with Commiter implementation
+// Store is a wrapper for a MemDB with Committer implementation
 type Store struct {
 	dbadapter.Store
 }
@@ -39,8 +39,12 @@ func (ts *Store) GetPruning() pruningtypes.PruningOptions {
 }
 
 // Implements CommitStore
-func (ts *Store) LastCommitID() (id types.CommitID) {
-	return
+func (ts *Store) LastCommitID() types.CommitID {
+	return types.CommitID{}
+}
+
+func (ts *Store) WorkingHash() []byte {
+	return []byte{}
 }
 
 // Implements Store.

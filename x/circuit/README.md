@@ -4,7 +4,28 @@
 
 Circuit Breaker is a module that is meant to avoid a chain needing to halt/shut down in the presence of a vulnerability, instead the module will allow specific messages or all messages to be disabled. When operating a chain, if it is app specific then a halt of the chain is less detrimental, but if there are applications built on top of the chain then halting is expensive due to the disturbance to applications. 
 
+## How it works
+
 Circuit Breaker works with the idea that an address or set of addresses have the right to block messages from being executed and/or included in the mempool. Any address with a permission is able to reset the circuit breaker for the message. 
+
+The transactions are checked and can be rejected at two points:
+
+* In `CircuitBreakerDecorator` [ante handler](https://docs.cosmos.network/main/learn/advanced/baseapp#antehandler):
+
+```go reference
+https://github.com/cosmos/cosmos-sdk/blob/x/circuit/v0.1.0/x/circuit/ante/circuit.go#L27-L41
+``` 
+
+* With a [message router check](https://docs.cosmos.network/main/learn/advanced/baseapp#msg-service-router):
+
+```go reference
+https://github.com/cosmos/cosmos-sdk/blob/v0.50.1/baseapp/msg_service_router.go#L104-L115
+``` 
+
+:::note
+The `CircuitBreakerDecorator` works for most use cases, but [does not check the inner messages of a transaction](https://docs.cosmos.network/main/learn/beginner/tx-lifecycle#antehandler). This some transactions (such as `x/authz` transactions or some `x/gov` transactions) may pass the ante handler. **This does not affect the circuit breaker** as the message router check will still fail the transaction.
+This tradeoff is to avoid introducing more dependencies in the `x/circuit` module. Chains can re-define the `CircuitBreakerDecorator` to check for inner messages if they wish to do so.
+:::
 
 ## State
 
@@ -38,7 +59,6 @@ type Access struct {
 }
 ```
 
-
 ### Disable List
 
 List of type urls that are disabled.
@@ -59,7 +79,7 @@ Authorize, is called by the module authority (default governance module account)
 
 ### Trip
 
-Trip, is called by an account to disable message execution for a specific msgURL. 
+Trip, is called by an authorized account to disable message execution for a specific msgURL. If empty, all the msgs will be disabled.
 
 ```protobuf
   // TripCircuitBreaker pauses processing of Msg's in the state machine.
@@ -68,11 +88,11 @@ Trip, is called by an account to disable message execution for a specific msgURL
 
 ### Reset
 
-Reset is called to enable execution of a previously disabled message. 
+Reset is called by an authorized account to enable execution for a specific msgURL of previously disabled message. If empty, all the disabled messages will be enabled.
 
 ```protobuf
   // ResetCircuitBreaker resumes processing of Msg's in the state machine that
-  // have been been paused using TripCircuitBreaker.
+  // have been paused using TripCircuitBreaker.
   rpc ResetCircuitBreaker(MsgResetCircuitBreaker) returns (MsgResetCircuitBreakerResponse);
 ```
 
@@ -81,35 +101,103 @@ Reset is called to enable execution of a previously disabled message.
 ### MsgAuthorizeCircuitBreaker
 
 ```protobuf reference
-https://github.com/cosmos/cosmos-sdk/blob/main/proto/cosmos/circuit/v1/tx.proto#L25-L75
+https://github.com/cosmos/cosmos-sdk/blob/main/x/circuit/proto/cosmos/circuit/v1/tx.proto#L25-L40
 ```
 
 This message is expected to fail if:
 
 * the granter is not an account with permission level `LEVEL_SUPER_ADMIN` or the module authority
-* if the type urls does not exist <!-- TODO: is this possible?-->
 
 ### MsgTripCircuitBreaker
 
 ```protobuf reference 
-https://github.com/cosmos/cosmos-sdk/blob/main/proto/cosmos/circuit/v1/tx.proto#L77-L93
+https://github.com/cosmos/cosmos-sdk/blob/main/x/circuit/proto/cosmos/circuit/v1/tx.proto#L47-L60
 ```
 
 This message is expected to fail if:
 
 * if the signer does not have a permission level with the ability to disable the specified type url message
-* if the type urls does not exist <!-- TODO: is this possible?-->
 
 ### MsgResetCircuitBreaker
 
 ```protobuf reference
-https://github.com/cosmos/cosmos-sdk/blob/main/proto/cosmos/circuit/v1/tx.proto#L95-109
+https://github.com/cosmos/cosmos-sdk/blob/main/x/circuit/proto/cosmos/circuit/v1/tx.proto#L67-L78
 ```
 
 This message is expected to fail if:
 
-* if the type urls does not exist <!-- TODO: is this possible?-->
 * if the type url is not disabled
 
-* `## Events` - list and describe event tags used
-* `## Client` - list and describe CLI commands and gRPC and REST endpoints
+## Events
+
+The circuit module emits the following events:
+
+### Message Events
+
+#### MsgAuthorizeCircuitBreaker
+
+| Type    | Attribute Key | Attribute Value           |
+|---------|---------------|---------------------------|
+| string  | granter       | {granterAddress}          |
+| string  | grantee       | {granteeAddress}          |
+| string  | permission    | {granteePermissions}      |
+| message | module        | circuit                   |
+| message | action        | authorize_circuit_breaker |
+
+#### MsgTripCircuitBreaker
+
+| Type     | Attribute Key | Attribute Value    |
+|----------|---------------|--------------------|
+| string   | authority     | {authorityAddress} |
+| []string | msg_urls      | []string{msg_urls} |
+| message  | module        | circuit            |
+| message  | action        | trip_circuit_breaker |
+
+#### ResetCircuitBreaker
+
+| Type     | Attribute Key | Attribute Value    |
+|----------|---------------|--------------------|
+| string   | authority     | {authorityAddress} |
+| []string | msg_urls      | []string{msg_urls} |
+| message  | module        | circuit            |
+| message  | action        | reset_circuit_breaker |
+
+
+## Keys
+
+* `AccountPermissionPrefix` - `0x01`
+* `DisableListPrefix` -  `0x02`
+
+## Client
+
+### CLI
+
+`x/circuit` module client provides the following CLI commands:
+
+```shell
+$ <appd> tx circuit
+Transactions commands for the circuit module
+
+Usage:
+  simd tx circuit [flags]
+  simd tx circuit [command]
+
+Available Commands:
+  authorize   Authorize an account to trip the circuit breaker.
+  disable     Disable a message from being executed
+  reset       Enable a message to be executed
+```
+
+```shell
+$ <appd> query circuit
+Querying commands for the circuit module
+
+Usage:
+  simd query circuit [flags]
+  simd query circuit [command]
+
+Available Commands:
+  account       Query a specific account's permissions
+  accounts      Query all account permissions
+  disabled-list Query a list of all disabled message types
+```

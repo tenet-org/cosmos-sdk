@@ -3,14 +3,11 @@ package internal
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"os"
 	"path"
 
-	autocliv1 "cosmossdk.io/api/cosmos/autocli/v1"
-	reflectionv1 "cosmossdk.io/api/cosmos/reflection/v1"
-	"github.com/cockroachdb/errors"
-	"github.com/hashicorp/go-multierror"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -18,33 +15,37 @@ import (
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
-)
 
-const DefaultConfigDirName = ".hubl"
+	authv1betav1 "cosmossdk.io/api/cosmos/auth/v1beta1"
+	autocliv1 "cosmossdk.io/api/cosmos/autocli/v1"
+	reflectionv1 "cosmossdk.io/api/cosmos/reflection/v1"
+	"cosmossdk.io/tools/hubl/internal/config"
+)
 
 type ChainInfo struct {
 	client *grpc.ClientConn
 
-	ConfigDir     string
-	Chain         string
-	ModuleOptions map[string]*autocliv1.ModuleOptions
+	Context   context.Context
+	ConfigDir string
+	Chain     string
+	Config    *config.ChainConfig
+
 	ProtoFiles    *protoregistry.Files
-	Context       context.Context
-	Config        *ChainConfig
+	ModuleOptions map[string]*autocliv1.ModuleOptions
 }
 
-func NewChainInfo(configDir string, chain string, config *ChainConfig) *ChainInfo {
+func NewChainInfo(configDir, chain string, config *config.ChainConfig) *ChainInfo {
 	return &ChainInfo{
-		ConfigDir: configDir,
-		Chain:     chain,
-		Config:    config,
 		Context:   context.Background(),
+		Config:    config,
+		Chain:     chain,
+		ConfigDir: configDir,
 	}
 }
 
 func (c *ChainInfo) getCacheDir() (string, error) {
 	cacheDir := path.Join(c.ConfigDir, "cache")
-	return cacheDir, os.MkdirAll(cacheDir, 0o755)
+	return cacheDir, os.MkdirAll(cacheDir, 0o750)
 }
 
 func (c *ChainInfo) fdsCacheFilename() (string, error) {
@@ -92,7 +93,7 @@ func (c *ChainInfo) Load(reload bool) error {
 			return err
 		}
 
-		if err = os.WriteFile(fdsFilename, bz, 0o644); err != nil {
+		if err = os.WriteFile(fdsFilename, bz, 0o600); err != nil {
 			return err
 		}
 	} else {
@@ -123,22 +124,21 @@ func (c *ChainInfo) Load(reload bool) error {
 		}
 
 		autocliQueryClient := autocliv1.NewQueryClient(client)
-		appOptionsRes, err := autocliQueryClient.AppOptions(c.Context, &autocliv1.AppOptionsRequest{})
+		appOptsRes, err := autocliQueryClient.AppOptions(c.Context, &autocliv1.AppOptionsRequest{})
 		if err != nil {
-			appOptionsRes = guessAutocli(c.ProtoFiles)
+			appOptsRes = guessAutocli(c.ProtoFiles)
 		}
 
-		bz, err := proto.Marshal(appOptionsRes)
-		if err != nil {
-			return err
-		}
-
-		err = os.WriteFile(appOptsFilename, bz, 0o644)
+		bz, err := proto.Marshal(appOptsRes)
 		if err != nil {
 			return err
 		}
 
-		c.ModuleOptions = appOptionsRes.ModuleOptions
+		if err := os.WriteFile(appOptsFilename, bz, 0o600); err != nil {
+			return err
+		}
+
+		c.ModuleOptions = appOptsRes.ModuleOptions
 	} else {
 		bz, err := os.ReadFile(appOptsFilename)
 		if err != nil {
@@ -146,8 +146,7 @@ func (c *ChainInfo) Load(reload bool) error {
 		}
 
 		var appOptsRes autocliv1.AppOptionsResponse
-		err = proto.Unmarshal(bz, &appOptsRes)
-		if err != nil {
+		if err := proto.Unmarshal(bz, &appOptsRes); err != nil {
 			return err
 		}
 
@@ -174,14 +173,29 @@ func (c *ChainInfo) OpenClient() (*grpc.ClientConn, error) {
 		}
 
 		var err error
-		c.client, err = grpc.Dial(endpoint.Endpoint, grpc.WithTransportCredentials(creds))
+		c.client, err = grpc.NewClient(endpoint.Endpoint, grpc.WithTransportCredentials(creds))
 		if err != nil {
-			res = multierror.Append(res, err)
+			res = errors.Join(res, err)
 			continue
 		}
 
 		return c.client, nil
 	}
 
-	return nil, errors.Wrapf(res, "error loading gRPC client")
+	return nil, fmt.Errorf("error loading gRPC client: %w", res)
+}
+
+// getAddressPrefix returns the address prefix of the chain.
+func getAddressPrefix(ctx context.Context, conn grpc.ClientConnInterface) (string, error) {
+	authClient := authv1betav1.NewQueryClient(conn)
+	resp, err := authClient.Bech32Prefix(ctx, &authv1betav1.Bech32PrefixRequest{})
+	if err != nil {
+		return "", err
+	}
+
+	if resp == nil || resp.Bech32Prefix == "" {
+		return "", errors.New("bech32 account address prefix is not set")
+	}
+
+	return resp.Bech32Prefix, nil
 }

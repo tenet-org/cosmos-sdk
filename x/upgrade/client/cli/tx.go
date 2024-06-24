@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"cosmossdk.io/x/gov/client/cli"
 	"cosmossdk.io/x/upgrade/plan"
 	"cosmossdk.io/x/upgrade/types"
 
@@ -15,15 +16,15 @@ import (
 	"github.com/cosmos/cosmos-sdk/client/tx"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/address"
-	"github.com/cosmos/cosmos-sdk/x/gov/client/cli"
 )
 
 const (
-	FlagUpgradeHeight = "upgrade-height"
-	FlagUpgradeInfo   = "upgrade-info"
-	FlagNoValidate    = "no-validate"
-	FlagDaemonName    = "daemon-name"
-	FlagAuthority     = "authority"
+	FlagUpgradeHeight      = "upgrade-height"
+	FlagUpgradeInfo        = "upgrade-info"
+	FlagNoValidate         = "no-validate"
+	FlagNoChecksumRequired = "no-checksum-required"
+	FlagDaemonName         = "daemon-name"
+	FlagAuthority          = "authority"
 )
 
 // GetTxCmd returns the transaction commands for this module
@@ -35,13 +36,13 @@ func GetTxCmd() *cobra.Command {
 
 	cmd.AddCommand(
 		NewCmdSubmitUpgradeProposal(),
-		NewCmdSubmitCancelUpgradeProposal(),
 	)
 
 	return cmd
 }
 
 // NewCmdSubmitUpgradeProposal implements a command handler for submitting a software upgrade proposal transaction.
+// This commands is not migrated to autocli as it contains extra validation that is useful for submitting upgrade proposals.
 func NewCmdSubmitUpgradeProposal() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "software-upgrade [name] (--upgrade-height [height]) (--upgrade-info [info]) [flags]",
@@ -73,15 +74,21 @@ func NewCmdSubmitUpgradeProposal() *cobra.Command {
 			}
 
 			if !noValidate {
-				var daemonName string
-				if daemonName, err = cmd.Flags().GetString(FlagDaemonName); err != nil {
+				daemonName, err := cmd.Flags().GetString(FlagDaemonName)
+				if err != nil {
+					return err
+				}
+
+				noChecksum, err := cmd.Flags().GetBool(FlagNoChecksumRequired)
+				if err != nil {
 					return err
 				}
 
 				var planInfo *plan.Info
-				if planInfo, err = plan.ParseInfo(p.Info); err != nil {
+				if planInfo, err = plan.ParseInfo(p.Info, plan.ParseOptionEnforceChecksum(!noChecksum)); err != nil {
 					return err
 				}
+
 				if err = planInfo.ValidateFull(daemonName); err != nil {
 					return err
 				}
@@ -89,11 +96,13 @@ func NewCmdSubmitUpgradeProposal() *cobra.Command {
 
 			authority, _ := cmd.Flags().GetString(FlagAuthority)
 			if authority != "" {
-				if _, err = sdk.AccAddressFromBech32(authority); err != nil {
+				if _, err = clientCtx.AddressCodec.StringToBytes(authority); err != nil {
 					return fmt.Errorf("invalid authority address: %w", err)
 				}
 			} else {
-				authority = sdk.AccAddress(address.Module("gov")).String()
+				if authority, err = clientCtx.AddressCodec.BytesToString(address.Module("gov")); err != nil {
+					return fmt.Errorf("failed to convert authority address to string: %w", err)
+				}
 			}
 
 			if err := proposal.SetMsgs([]sdk.Msg{
@@ -102,7 +111,7 @@ func NewCmdSubmitUpgradeProposal() *cobra.Command {
 					Plan:      p,
 				},
 			}); err != nil {
-				return fmt.Errorf("failed to create cancel upgrade message: %w", err)
+				return fmt.Errorf("failed to create submit upgrade proposal message: %w", err)
 			}
 
 			return tx.GenerateOrBroadcastTxCLI(clientCtx, cmd.Flags(), proposal)
@@ -112,62 +121,17 @@ func NewCmdSubmitUpgradeProposal() *cobra.Command {
 	cmd.Flags().Int64(FlagUpgradeHeight, 0, "The height at which the upgrade must happen")
 	cmd.Flags().String(FlagUpgradeInfo, "", "Info for the upgrade plan such as new version download urls, etc.")
 	cmd.Flags().Bool(FlagNoValidate, false, "Skip validation of the upgrade info (dangerous!)")
+	cmd.Flags().Bool(FlagNoChecksumRequired, false, "Skip requirement of checksums for binaries in the upgrade info")
 	cmd.Flags().String(FlagDaemonName, getDefaultDaemonName(), "The name of the executable being upgraded (for upgrade-info validation). Default is the DAEMON_NAME env var if set, or else this executable")
 	cmd.Flags().String(FlagAuthority, "", "The address of the upgrade module authority (defaults to gov)")
 
 	// add common proposal flags
 	flags.AddTxFlagsToCmd(cmd)
 	cli.AddGovPropFlagsToCmd(cmd)
-	cmd.MarkFlagRequired(cli.FlagTitle)
-
-	return cmd
-}
-
-// NewCmdSubmitCancelUpgradeProposal implements a command handler for submitting a software upgrade cancel proposal transaction.
-func NewCmdSubmitCancelUpgradeProposal() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "cancel-software-upgrade [flags]",
-		Args:  cobra.ExactArgs(0),
-		Short: "Cancel the current software upgrade proposal",
-		Long:  "Cancel a software upgrade along with an initial deposit.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			clientCtx, err := client.GetClientTxContext(cmd)
-			if err != nil {
-				return err
-			}
-
-			proposal, err := cli.ReadGovPropFlags(clientCtx, cmd.Flags())
-			if err != nil {
-				return err
-			}
-
-			authority, _ := cmd.Flags().GetString(FlagAuthority)
-			if authority != "" {
-				if _, err = sdk.AccAddressFromBech32(authority); err != nil {
-					return fmt.Errorf("invalid authority address: %w", err)
-				}
-			} else {
-				authority = sdk.AccAddress(address.Module("gov")).String()
-			}
-
-			if err := proposal.SetMsgs([]sdk.Msg{
-				&types.MsgCancelUpgrade{
-					Authority: authority,
-				},
-			}); err != nil {
-				return fmt.Errorf("failed to create cancel upgrade message: %w", err)
-			}
-
-			return tx.GenerateOrBroadcastTxCLI(clientCtx, cmd.Flags(), proposal)
-		},
+	err := cmd.MarkFlagRequired(cli.FlagTitle)
+	if err != nil {
+		panic(err)
 	}
-
-	cmd.Flags().String(FlagAuthority, "", "The address of the upgrade module authority (defaults to gov)")
-
-	// add common proposal flags
-	flags.AddTxFlagsToCmd(cmd)
-	cli.AddGovPropFlagsToCmd(cmd)
-	cmd.MarkFlagRequired(cli.FlagTitle)
 
 	return cmd
 }

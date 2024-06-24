@@ -1,16 +1,17 @@
 package v2
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 
-	storetypes "cosmossdk.io/store/types"
+	"cosmossdk.io/core/store"
+	authtypes "cosmossdk.io/x/auth/types"
+	"cosmossdk.io/x/group"
+	"cosmossdk.io/x/group/internal/orm"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/address"
-	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
-	"github.com/cosmos/cosmos-sdk/x/group"
-	"github.com/cosmos/cosmos-sdk/x/group/internal/orm"
 )
 
 const (
@@ -24,13 +25,13 @@ const (
 // Migrate migrates the x/group module state from the consensus version 1 to version 2.
 // Specifically, it changes the group policy account from module account to base account.
 func Migrate(
-	ctx sdk.Context,
-	storeKey storetypes.StoreKey,
+	ctx context.Context,
+	storeService store.KVStoreService,
 	accountKeeper group.AccountKeeper,
 	groupPolicySeq orm.Sequence,
 	groupPolicyTable orm.PrimaryKeyTable,
 ) error {
-	store := ctx.KVStore(storeKey)
+	store := storeService.OpenKVStore(ctx)
 	curAccVal := groupPolicySeq.CurVal(store)
 	groupPolicyAccountDerivationKey := make(map[string][]byte, 0)
 	policyKey := []byte{GroupPolicyTablePrefix}
@@ -38,7 +39,11 @@ func Migrate(
 		derivationKey := make([]byte, 8)
 		binary.BigEndian.PutUint64(derivationKey, i)
 		groupPolicyAcc := sdk.AccAddress(address.Module(group.ModuleName, policyKey, derivationKey))
-		groupPolicyAccountDerivationKey[groupPolicyAcc.String()] = derivationKey
+		groupPolicyAddr, err := accountKeeper.AddressCodec().BytesToString(groupPolicyAcc)
+		if err != nil {
+			return err
+		}
+		groupPolicyAccountDerivationKey[groupPolicyAddr] = derivationKey
 	}
 
 	// get all group policies
@@ -48,8 +53,13 @@ func Migrate(
 	}
 
 	for _, policy := range groupPolicies {
+		addr, err := accountKeeper.AddressCodec().StringToBytes(policy.Address)
+		if err != nil {
+			return fmt.Errorf("failed to convert group policy account address: %w", err)
+		}
+
 		// get the account address by acc id
-		oldAcc := accountKeeper.GetAccount(ctx, sdk.MustAccAddressFromBech32(policy.Address))
+		oldAcc := accountKeeper.GetAccount(ctx, addr)
 		// remove the old account
 		accountKeeper.RemoveAccount(ctx, oldAcc)
 
@@ -67,6 +77,12 @@ func Migrate(
 		baseAccount, err := authtypes.NewBaseAccountWithPubKey(ac)
 		if err != nil {
 			return fmt.Errorf("failed to create new group policy account: %w", err)
+		}
+
+		// set account number
+		err = baseAccount.SetAccountNumber(oldAcc.GetAccountNumber())
+		if err != nil {
+			return err
 		}
 
 		// NOTE: we do not call NewAccount because we do not want to bump the account number

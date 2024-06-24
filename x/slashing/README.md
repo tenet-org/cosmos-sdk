@@ -53,7 +53,7 @@ blocks. Validators who are _bonded_ are _at stake_, meaning that part or all of
 their stake and their delegators' stake is at risk if they commit a protocol fault.
 
 For each of these validators we keep a `ValidatorSigningInfo` record that contains
-information partaining to validator's liveness and other infraction related
+information pertaining to validator's liveness and other infraction related
 attributes.
 
 ### Tombstone Caps
@@ -70,7 +70,7 @@ Liveness faults do not have caps, as they can't stack upon each other. Liveness 
 ### Infraction Timelines
 
 To illustrate how the `x/slashing` module handles submitted evidence through
-Tendermint consensus, consider the following examples:
+CometBFT consensus, consider the following examples:
 
 **Definitions**:
 
@@ -101,10 +101,10 @@ is also tombstoned, they can not rejoin the validator set.
 ### Signing Info (Liveness)
 
 Every block includes a set of precommits by the validators for the previous block,
-known as the `LastCommitInfo` provided by Tendermint. A `LastCommitInfo` is valid so
+known as the `LastCommitInfo` provided by CometBFT. A `LastCommitInfo` is valid so
 long as it contains precommits from +2/3 of total voting power.
 
-Proposers are incentivized to include precommits from all validators in the Tendermint `LastCommitInfo`
+Proposers are incentivized to include precommits from all validators in the CometBFT `LastCommitInfo`
 by receiving additional fees proportional to the difference between the voting
 power included in the `LastCommitInfo` and +2/3 (see [fee distribution](../distribution/README.md#begin-block)).
 
@@ -212,10 +212,11 @@ provisions and rewards.
 At the beginning of each block, we update the `ValidatorSigningInfo` for each
 validator and check if they've crossed below the liveness threshold over a
 sliding window. This sliding window is defined by `SignedBlocksWindow` and the
-index in this window is determined by `IndexOffset` found in the validator's
-`ValidatorSigningInfo`. For each block processed, the `IndexOffset` is incremented
-regardless if the validator signed or not. Once the index is determined, the
-`MissedBlocksBitArray` and `MissedBlocksCounter` are updated accordingly.
+index in this window is determined by (`height - SignInfo.StartHeight`).
+Notice that the position in the sliding window is incremented every block,
+independent of whether the validator signed or not.
+Once the index is determined, the `MissedBlocksBitArray` and
+`MissedBlocksCounter` are updated accordingly.
 
 Finally, in order to determine if a validator crosses below the liveness threshold,
 we fetch the maximum number of blocks missed, `maxMissed`, which is
@@ -235,10 +236,8 @@ for vote in block.LastCommitInfo.Votes {
   signInfo := GetValidatorSigningInfo(vote.Validator.Address)
 
   // This is a relative index, so we counts blocks the validator SHOULD have
-  // signed. We use the 0-value default signing info if not present, except for
-  // start height.
-  index := signInfo.IndexOffset % SignedBlocksWindow()
-  signInfo.IndexOffset++
+  // signed. We use the 0-value default signing info if not present.
+  index := (height - signInfo.StartHeight) % SignedBlocksWindow()
 
   // Update MissedBlocksBitArray and MissedBlocksCounter. The MissedBlocksCounter
   // just tracks the sum of MissedBlocksBitArray. That way we avoid needing to
@@ -490,11 +489,11 @@ of the hooks defined in the `slashing` module consumed by the `staking` module
 #### Single slashing amount
 
 Another optimization that can be made is that if we assume that all ABCI faults
-for Tendermint consensus are slashed at the same level, we don't have to keep
+for CometBFT consensus are slashed at the same level, we don't have to keep
 track of "max slash". Once an ABCI fault happens, we don't have to worry about
 comparing potential future ones to find the max.
 
-Currently the only Tendermint ABCI fault is:
+Currently the only CometBFT ABCI fault is:
 
 * Unjustified precommits (double signs)
 
@@ -505,8 +504,8 @@ It is currently planned to include the following fault in the near future:
 Given that these faults are both attributable byzantine faults, we will likely
 want to slash them equally, and thus we can enact the above change.
 
-> Note: This change may make sense for current Tendermint consensus, but maybe
-> not for a different consensus algorithm or future versions of Tendermint that
+> Note: This change may make sense for current CometBFT consensus, but maybe
+> not for a different consensus algorithm or future versions of CometBFT that
 > may want to punish at different levels (for example, partial slashing).
 
 ## Parameters

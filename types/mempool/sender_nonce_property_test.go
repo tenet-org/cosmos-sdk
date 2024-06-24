@@ -3,16 +3,15 @@ package mempool_test
 import (
 	"sort"
 
+	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 
-	"cosmossdk.io/log"
-	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
-	"github.com/stretchr/testify/require"
+	"cosmossdk.io/core/log"
+	"cosmossdk.io/x/auth/signing"
 
 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	mempool "github.com/cosmos/cosmos-sdk/types/mempool"
-	"github.com/cosmos/cosmos-sdk/x/auth/signing"
+	"github.com/cosmos/cosmos-sdk/types/mempool"
 )
 
 var (
@@ -34,7 +33,7 @@ func AddressGenerator(t *rapid.T) *rapid.Generator[sdk.AccAddress] {
 }
 
 func testMempoolProperties(t *rapid.T) {
-	ctx := sdk.NewContext(nil, cmtproto.Header{}, false, log.NewNopLogger())
+	ctx := sdk.NewContext(nil, false, log.NewNopLogger())
 	mp := mempool.NewSenderNonceMempool()
 
 	genMultipleAddress := rapid.SliceOfNDistinct(AddressGenerator(t), 1, 10, func(acc sdk.AccAddress) string {

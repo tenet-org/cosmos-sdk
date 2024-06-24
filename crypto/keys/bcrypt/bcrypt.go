@@ -8,6 +8,7 @@
 package bcrypt
 
 // The code is a port of Provos and Mazières's C implementation.
+
 import (
 	"crypto/subtle"
 	"errors"
@@ -31,7 +32,7 @@ var ErrMismatchedHashAndPassword = errors.New("crypto/bcrypt: hashedPassword is 
 // be a bcrypt hash.
 var ErrHashTooShort = errors.New("crypto/bcrypt: hashedSecret too short to be a bcrypted password")
 
-// The error returned from CompareHashAndPassword when a hash was created with
+// HashVersionTooNewError the error returned from CompareHashAndPassword when a hash was created with
 // a bcrypt algorithm newer than this implementation.
 type HashVersionTooNewError byte
 
@@ -39,14 +40,14 @@ func (hv HashVersionTooNewError) Error() string {
 	return fmt.Sprintf("crypto/bcrypt: bcrypt algorithm version '%c' requested is newer than current version '%c'", byte(hv), majorVersion)
 }
 
-// The error returned from CompareHashAndPassword when a hash starts with something other than '$'
+// InvalidHashPrefixError the error returned from CompareHashAndPassword when a hash starts with something other than '$'
 type InvalidHashPrefixError byte
 
 func (ih InvalidHashPrefixError) Error() string {
 	return fmt.Sprintf("crypto/bcrypt: bcrypt hashes must start with '$', but hashedSecret started with '%c'", byte(ih))
 }
 
-type InvalidCostError int
+type InvalidCostError uint32
 
 func (ic InvalidCostError) Error() string {
 	return fmt.Sprintf("crypto/bcrypt: cost %d is outside allowed range (%d,%d)", int(ic), MinCost, MaxCost)
@@ -85,7 +86,7 @@ type hashed struct {
 // cost. If the cost given is less than MinCost, the cost will be set to
 // DefaultCost, instead. Use CompareHashAndPassword, as defined in this package,
 // to compare the returned hashed password with its cleartext version.
-func GenerateFromPassword(salt []byte, password []byte, cost uint32) ([]byte, error) {
+func GenerateFromPassword(salt, password []byte, cost uint32) ([]byte, error) {
 	if len(salt) != maxSaltSize {
 		return nil, fmt.Errorf("salt len must be %v", maxSaltSize)
 	}
@@ -129,7 +130,7 @@ func Cost(hashedPassword []byte) (uint32, error) {
 	return p.cost, nil
 }
 
-func newFromPassword(salt []byte, password []byte, cost uint32) (*hashed, error) {
+func newFromPassword(salt, password []byte, cost uint32) (*hashed, error) {
 	if cost < MinCost {
 		cost = DefaultCost
 	}
@@ -210,7 +211,7 @@ func expensiveBlowfishSetup(key []byte, cost uint32, salt []byte) (*blowfish.Cip
 	// Bug compatibility with C bcrypt implementations. They use the trailing
 	// NULL in the key string during expansion.
 	// We copy the key to prevent changing the underlying array.
-	ckey := append(key[:len(key):len(key)], 0) //nolint:gocritic // used in original https://cs.opensource.google/go/x/crypto/+/master:bcrypt/bcrypt.go
+	ckey := append(key[:len(key):len(key)], 0)
 
 	c, err := blowfish.NewSaltedCipher(ckey, csalt)
 	if err != nil {
@@ -265,17 +266,17 @@ func (p *hashed) decodeVersion(sbytes []byte) (int, error) {
 	return n, nil
 }
 
-// sbytes should begin where decodeVersion left off.
+// decodeCost sbytes should begin where decodeVersion left off.
 func (p *hashed) decodeCost(sbytes []byte) (int, error) {
-	cost, err := strconv.Atoi(string(sbytes[0:2]))
+	cost, err := strconv.ParseUint(string(sbytes[0:2]), 10, 32)
 	if err != nil {
 		return -1, err
 	}
-	err = checkCost(uint32(cost))
+	err = checkCost(uint64to32(cost))
 	if err != nil {
 		return -1, err
 	}
-	p.cost = uint32(cost)
+	p.cost = uint64to32(cost)
 	return 3, nil
 }
 
@@ -288,4 +289,14 @@ func checkCost(cost uint32) error {
 		return InvalidCostError(cost)
 	}
 	return nil
+}
+
+// uint64to32 converts a uint64 value to a uint32 value.
+// If the input value is greater than 0xFFFFFFFF, it returns 0xFFFFFFFF.
+// Otherwise, it returns the input value converted to uint32.
+func uint64to32(u uint64) uint32 {
+	if u > 0xFFFFFFFF {
+		return 0xFFFFFFFF
+	}
+	return uint32(u)
 }

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math/bits"
 
-	cmtprotocrypto "github.com/cometbft/cometbft/proto/tendermint/crypto"
-	ics23 "github.com/confio/ics23/go"
+	cmtprotocrypto "github.com/cometbft/cometbft/api/cometbft/crypto/v1"
+	ics23 "github.com/cosmos/ics23/go"
 )
 
 // ConvertExistenceProof will convert the given proof into a valid

@@ -17,12 +17,6 @@ func (s *SignDocDirectAux) ValidateBasic() error {
 		return sdkerrors.ErrInvalidPubKey.Wrap("public key cannot be empty")
 	}
 
-	if s.Tip != nil {
-		if s.Tip.Tipper == "" {
-			return sdkerrors.ErrInvalidRequest.Wrap("tipper cannot be empty")
-		}
-	}
-
 	return nil
 }
 
@@ -48,7 +42,7 @@ func (a *AuxSignerData) ValidateBasic() error {
 	return a.GetSignDoc().ValidateBasic()
 }
 
-// GetSignaturesV2 gets the SignatureV2 of the aux signer.
+// GetSignatureV2 gets the SignatureV2 of the aux signer.
 func (a *AuxSignerData) GetSignatureV2() (signing.SignatureV2, error) {
 	pk, ok := a.SignDoc.PublicKey.GetCachedValue().(cryptotypes.PubKey)
 	if !ok {

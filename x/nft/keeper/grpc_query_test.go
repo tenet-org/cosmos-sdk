@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/suite"
 
 	"cosmossdk.io/x/nft"
+
+	"github.com/cosmos/cosmos-sdk/codec/address"
 )
 
 func TestGRPCQuery(t *testing.T) {
@@ -16,6 +18,7 @@ func TestGRPCQuery(t *testing.T) {
 }
 
 func (s *TestSuite) TestBalance() {
+	s.accountKeeper.EXPECT().AddressCodec().Return(address.NewBech32Codec("cosmos")).AnyTimes()
 	var req *nft.QueryBalanceRequest
 	testCases := []struct {
 		msg      string
@@ -51,7 +54,7 @@ func (s *TestSuite) TestBalance() {
 				s.TestMint()
 				req = &nft.QueryBalanceRequest{
 					ClassId: testClassID,
-					Owner:   s.addrs[0].String(),
+					Owner:   s.encodedAddrs[0],
 				}
 			},
 			"",
@@ -66,6 +69,71 @@ func (s *TestSuite) TestBalance() {
 			require := s.Require()
 			tc.malleate(index, require)
 			result, err := s.queryClient.Balance(gocontext.Background(), req)
+			if tc.expError == "" {
+				require.NoError(err)
+			} else {
+				require.Error(err)
+				require.Contains(err.Error(), tc.expError)
+			}
+			tc.postTest(index, require, result, tc.balance)
+		})
+	}
+}
+
+func (s *TestSuite) TestBalanceByQueryString() {
+	s.accountKeeper.EXPECT().AddressCodec().Return(address.NewBech32Codec("cosmos")).AnyTimes()
+	var req *nft.QueryBalanceByQueryStringRequest
+	testCases := []struct {
+		msg      string
+		malleate func(index int, require *require.Assertions)
+		expError string
+		balance  uint64
+		postTest func(index int, require *require.Assertions, res *nft.QueryBalanceByQueryStringResponse, expBalance uint64)
+	}{
+		{
+			"fail empty ClassId",
+			func(index int, require *require.Assertions) {
+				req = &nft.QueryBalanceByQueryStringRequest{}
+			},
+			nft.ErrEmptyClassID.Error(),
+			0,
+			func(index int, require *require.Assertions, res *nft.QueryBalanceByQueryStringResponse, expBalance uint64) {
+			},
+		},
+		{
+			"fail invalid Owner addr",
+			func(index int, require *require.Assertions) {
+				req = &nft.QueryBalanceByQueryStringRequest{
+					ClassId: testClassID,
+					Owner:   "owner",
+				}
+			},
+			"decoding bech32 failed",
+			0,
+			func(index int, require *require.Assertions, res *nft.QueryBalanceByQueryStringResponse, expBalance uint64) {
+			},
+		},
+		{
+			"Success",
+			func(index int, require *require.Assertions) {
+				s.TestMint()
+				req = &nft.QueryBalanceByQueryStringRequest{
+					ClassId: testClassID,
+					Owner:   s.encodedAddrs[0],
+				}
+			},
+			"",
+			2,
+			func(index int, require *require.Assertions, res *nft.QueryBalanceByQueryStringResponse, expBalance uint64) {
+				require.Equal(res.Amount, expBalance, "the error occurred on:%d", index)
+			},
+		},
+	}
+	for index, tc := range testCases {
+		s.Run(fmt.Sprintf("Case %s", tc.msg), func() {
+			require := s.Require()
+			tc.malleate(index, require)
+			result, err := s.queryClient.BalanceByQueryString(gocontext.Background(), req)
 			if tc.expError == "" {
 				require.NoError(err)
 			} else {
@@ -142,7 +210,7 @@ func (s *TestSuite) TestOwner() {
 					ClassId: testClassID,
 					Id:      testID,
 				}
-				owner = s.addrs[0].String()
+				owner = s.encodedAddrs[0]
 			},
 			"",
 			func(index int, require *require.Assertions, res *nft.QueryOwnerResponse) {
@@ -155,6 +223,95 @@ func (s *TestSuite) TestOwner() {
 			require := s.Require()
 			tc.malleate(index, require)
 			result, err := s.queryClient.Owner(gocontext.Background(), req)
+			if tc.expError == "" {
+				require.NoError(err)
+			} else {
+				require.Error(err)
+				require.Contains(err.Error(), tc.expError)
+			}
+			tc.postTest(index, require, result)
+		})
+	}
+}
+
+func (s *TestSuite) TestOwnerByQueryString() {
+	var (
+		req   *nft.QueryOwnerByQueryStringRequest
+		owner string
+	)
+	testCases := []struct {
+		msg      string
+		malleate func(index int, require *require.Assertions)
+		expError string
+		postTest func(index int, require *require.Assertions, res *nft.QueryOwnerByQueryStringResponse)
+	}{
+		{
+			"fail empty ClassId",
+			func(index int, require *require.Assertions) {
+				req = &nft.QueryOwnerByQueryStringRequest{
+					Id: testID,
+				}
+			},
+			nft.ErrEmptyClassID.Error(),
+			func(index int, require *require.Assertions, res *nft.QueryOwnerByQueryStringResponse) {},
+		},
+		{
+			"fail empty nft id",
+			func(index int, require *require.Assertions) {
+				req = &nft.QueryOwnerByQueryStringRequest{
+					ClassId: testClassID,
+				}
+			},
+			nft.ErrEmptyNFTID.Error(),
+			func(index int, require *require.Assertions, res *nft.QueryOwnerByQueryStringResponse) {},
+		},
+		{
+			"success but nft id not exist",
+			func(index int, require *require.Assertions) {
+				req = &nft.QueryOwnerByQueryStringRequest{
+					ClassId: testClassID,
+					Id:      "kitty2",
+				}
+			},
+			"",
+			func(index int, require *require.Assertions, res *nft.QueryOwnerByQueryStringResponse) {
+				require.Equal(res.Owner, owner, "the error occurred on:%d", index)
+			},
+		},
+		{
+			"success but class id not exist",
+			func(index int, require *require.Assertions) {
+				req = &nft.QueryOwnerByQueryStringRequest{
+					ClassId: "kitty1",
+					Id:      testID,
+				}
+			},
+			"",
+			func(index int, require *require.Assertions, res *nft.QueryOwnerByQueryStringResponse) {
+				require.Equal(res.Owner, owner, "the error occurred on:%d", index)
+			},
+		},
+		{
+			"Success",
+			func(index int, require *require.Assertions) {
+				s.TestMint()
+				req = &nft.QueryOwnerByQueryStringRequest{
+					ClassId: testClassID,
+					Id:      testID,
+				}
+				owner = s.encodedAddrs[0]
+			},
+			"",
+			func(index int, require *require.Assertions, res *nft.QueryOwnerByQueryStringResponse) {
+				require.Equal(res.Owner, owner, "the error occurred on:%d", index)
+			},
+		},
+	}
+	for index, tc := range testCases {
+		s.Run(fmt.Sprintf("Case %s", tc.msg), func() {
+			require := s.Require()
+			tc.malleate(index, require)
+			result, err := s.queryClient.OwnerByQueryString(gocontext.Background(), req)
 			if tc.expError == "" {
 				require.NoError(err)
 			} else {
@@ -249,6 +406,90 @@ func (s *TestSuite) TestSupply() {
 	}
 }
 
+func (s *TestSuite) TestSupplyByQueryString() {
+	var req *nft.QuerySupplyByQueryStringRequest
+	testCases := []struct {
+		msg      string
+		malleate func(index int, require *require.Assertions)
+		expError string
+		supply   uint64
+		postTest func(index int, require *require.Assertions, res *nft.QuerySupplyByQueryStringResponse, supply uint64)
+	}{
+		{
+			"fail empty ClassId",
+			func(index int, require *require.Assertions) {
+				req = &nft.QuerySupplyByQueryStringRequest{}
+			},
+			nft.ErrEmptyClassID.Error(),
+			0,
+			func(index int, require *require.Assertions, res *nft.QuerySupplyByQueryStringResponse, supply uint64) {
+			},
+		},
+		{
+			"success but class id not exist",
+			func(index int, require *require.Assertions) {
+				req = &nft.QuerySupplyByQueryStringRequest{
+					ClassId: "kitty1",
+				}
+			},
+			"",
+			0,
+			func(index int, require *require.Assertions, res *nft.QuerySupplyByQueryStringResponse, supply uint64) {
+				require.Equal(res.Amount, supply, "the error occurred on:%d", index)
+			},
+		},
+		{
+			"success but supply equal zero",
+			func(index int, require *require.Assertions) {
+				req = &nft.QuerySupplyByQueryStringRequest{
+					ClassId: testClassID,
+				}
+				s.TestSaveClass()
+			},
+			"",
+			0,
+			func(index int, require *require.Assertions, res *nft.QuerySupplyByQueryStringResponse, supply uint64) {
+				require.Equal(res.Amount, supply, "the error occurred on:%d", index)
+			},
+		},
+		{
+			"Success",
+			func(index int, require *require.Assertions) {
+				n := nft.NFT{
+					ClassId: testClassID,
+					Id:      testID,
+					Uri:     testURI,
+				}
+				err := s.nftKeeper.Mint(s.ctx, n, s.addrs[0])
+				require.NoError(err, "the error occurred on:%d", index)
+
+				req = &nft.QuerySupplyByQueryStringRequest{
+					ClassId: testClassID,
+				}
+			},
+			"",
+			1,
+			func(index int, require *require.Assertions, res *nft.QuerySupplyByQueryStringResponse, supply uint64) {
+				require.Equal(res.Amount, supply, "the error occurred on:%d", index)
+			},
+		},
+	}
+	for index, tc := range testCases {
+		s.Run(fmt.Sprintf("Case %s", tc.msg), func() {
+			require := s.Require()
+			tc.malleate(index, require)
+			result, err := s.queryClient.SupplyByQueryString(gocontext.Background(), req)
+			if tc.expError == "" {
+				require.NoError(err)
+			} else {
+				require.Error(err)
+				require.Contains(err.Error(), tc.expError)
+			}
+			tc.postTest(index, require, result, tc.supply)
+		})
+	}
+}
+
 func (s *TestSuite) TestNFTs() {
 	var (
 		req  *nft.QueryNFTsRequest
@@ -272,7 +513,7 @@ func (s *TestSuite) TestNFTs() {
 			"success,empty ClassId and no nft",
 			func(index int, require *require.Assertions) {
 				req = &nft.QueryNFTsRequest{
-					Owner: s.addrs[1].String(),
+					Owner: s.encodedAddrs[1],
 				}
 				s.TestSaveClass()
 			},
@@ -320,7 +561,7 @@ func (s *TestSuite) TestNFTs() {
 				}
 
 				req = &nft.QueryNFTsRequest{
-					Owner: s.addrs[2].String(),
+					Owner: s.encodedAddrs[2],
 				}
 			},
 			"",
@@ -345,7 +586,7 @@ func (s *TestSuite) TestNFTs() {
 			func(index int, require *require.Assertions) {
 				req = &nft.QueryNFTsRequest{
 					ClassId: testClassID,
-					Owner:   s.addrs[0].String(),
+					Owner:   s.encodedAddrs[0],
 				}
 				nfts = []*nft.NFT{
 					{
@@ -464,6 +705,93 @@ func (s *TestSuite) TestNFT() {
 	}
 }
 
+func (s *TestSuite) TestNFTByQueryString() {
+	var (
+		req    *nft.QueryNFTByQueryStringRequest
+		expNFT nft.NFT
+	)
+	testCases := []struct {
+		msg      string
+		malleate func(index int, require *require.Assertions)
+		expError string
+		postTest func(index int, require *require.Assertions, res *nft.QueryNFTByQueryStringResponse)
+	}{
+		{
+			"fail empty ClassId",
+			func(index int, require *require.Assertions) {
+				req = &nft.QueryNFTByQueryStringRequest{}
+			},
+			nft.ErrEmptyClassID.Error(),
+			func(index int, require *require.Assertions, res *nft.QueryNFTByQueryStringResponse) {},
+		},
+		{
+			"fail empty nft id",
+			func(index int, require *require.Assertions) {
+				req = &nft.QueryNFTByQueryStringRequest{
+					ClassId: testClassID,
+				}
+			},
+			nft.ErrEmptyNFTID.Error(),
+			func(index int, require *require.Assertions, res *nft.QueryNFTByQueryStringResponse) {},
+		},
+		{
+			"fail ClassId not exist",
+			func(index int, require *require.Assertions) {
+				req = &nft.QueryNFTByQueryStringRequest{
+					ClassId: "kitty1",
+					Id:      testID,
+				}
+				s.TestMint()
+			},
+			"not found nft",
+			func(index int, require *require.Assertions, res *nft.QueryNFTByQueryStringResponse) {},
+		},
+		{
+			"fail nft id not exist",
+			func(index int, require *require.Assertions) {
+				req = &nft.QueryNFTByQueryStringRequest{
+					ClassId: testClassID,
+					Id:      "kitty2",
+				}
+			},
+			"not found nft",
+			func(index int, require *require.Assertions, res *nft.QueryNFTByQueryStringResponse) {},
+		},
+		{
+			"success",
+			func(index int, require *require.Assertions) {
+				req = &nft.QueryNFTByQueryStringRequest{
+					ClassId: testClassID,
+					Id:      testID,
+				}
+				expNFT = nft.NFT{
+					ClassId: testClassID,
+					Id:      testID,
+					Uri:     testURI,
+				}
+			},
+			"",
+			func(index int, require *require.Assertions, res *nft.QueryNFTByQueryStringResponse) {
+				require.Equal(*res.Nft, expNFT, "the error occurred on:%d", index)
+			},
+		},
+	}
+	for index, tc := range testCases {
+		s.Run(fmt.Sprintf("Case %s", tc.msg), func() {
+			require := s.Require()
+			tc.malleate(index, require)
+			result, err := s.queryClient.NFTByQueryString(gocontext.Background(), req)
+			if tc.expError == "" {
+				require.NoError(err)
+			} else {
+				require.Error(err)
+				require.Contains(err.Error(), tc.expError)
+			}
+			tc.postTest(index, require, result)
+		})
+	}
+}
+
 func (s *TestSuite) TestClass() {
 	var (
 		req   *nft.QueryClassRequest
@@ -520,6 +848,73 @@ func (s *TestSuite) TestClass() {
 			require := s.Require()
 			tc.malleate(index, require)
 			result, err := s.queryClient.Class(gocontext.Background(), req)
+			if tc.expError == "" {
+				require.NoError(err)
+			} else {
+				require.Error(err)
+				require.Contains(err.Error(), tc.expError)
+			}
+			tc.postTest(index, require, result)
+		})
+	}
+}
+
+func (s *TestSuite) TestClassByQueryString() {
+	var (
+		req   *nft.QueryClassByQueryStringRequest
+		class nft.Class
+	)
+	testCases := []struct {
+		msg      string
+		malleate func(index int, require *require.Assertions)
+		expError string
+		postTest func(index int, require *require.Assertions, res *nft.QueryClassByQueryStringResponse)
+	}{
+		{
+			"fail empty ClassId",
+			func(index int, require *require.Assertions) {
+				req = &nft.QueryClassByQueryStringRequest{}
+			},
+			nft.ErrEmptyClassID.Error(),
+			func(index int, require *require.Assertions, res *nft.QueryClassByQueryStringResponse) {},
+		},
+		{
+			"fail ClassId not exist",
+			func(index int, require *require.Assertions) {
+				req = &nft.QueryClassByQueryStringRequest{
+					ClassId: "kitty1",
+				}
+				s.TestSaveClass()
+			},
+			"not found class",
+			func(index int, require *require.Assertions, res *nft.QueryClassByQueryStringResponse) {},
+		},
+		{
+			"success",
+			func(index int, require *require.Assertions) {
+				class = nft.Class{
+					Id:          testClassID,
+					Name:        testClassName,
+					Symbol:      testClassSymbol,
+					Description: testClassDescription,
+					Uri:         testClassURI,
+					UriHash:     testClassURIHash,
+				}
+				req = &nft.QueryClassByQueryStringRequest{
+					ClassId: testClassID,
+				}
+			},
+			"",
+			func(index int, require *require.Assertions, res *nft.QueryClassByQueryStringResponse) {
+				require.Equal(*res.Class, class, "the error occurred on:%d", index)
+			},
+		},
+	}
+	for index, tc := range testCases {
+		s.Run(fmt.Sprintf("Case %s", tc.msg), func() {
+			require := s.Require()
+			tc.malleate(index, require)
+			result, err := s.queryClient.ClassByQueryString(gocontext.Background(), req)
 			if tc.expError == "" {
 				require.NoError(err)
 			} else {

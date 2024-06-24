@@ -7,13 +7,14 @@ import (
 	"github.com/stretchr/testify/suite"
 
 	"cosmossdk.io/simapp"
+
 	"github.com/cosmos/cosmos-sdk/testutil/network"
 )
 
 type IntegrationTestSuite struct {
 	suite.Suite
 
-	network *network.Network
+	network network.NetworkI
 }
 
 func (s *IntegrationTestSuite) SetupSuite() {

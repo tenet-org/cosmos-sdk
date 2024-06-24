@@ -3,8 +3,8 @@ package orm
 import (
 	"github.com/cosmos/gogoproto/proto"
 
-	storetypes "cosmossdk.io/store/types"
-
+	"cosmossdk.io/core/address"
+	storetypes "cosmossdk.io/core/store"
 	"cosmossdk.io/errors"
 
 	"github.com/cosmos/cosmos-sdk/codec"
@@ -22,8 +22,8 @@ type AutoUInt64Table struct {
 }
 
 // NewAutoUInt64Table creates a new AutoUInt64Table.
-func NewAutoUInt64Table(prefixData [2]byte, prefixSeq byte, model proto.Message, cdc codec.Codec) (*AutoUInt64Table, error) {
-	table, err := newTable(prefixData, model, cdc)
+func NewAutoUInt64Table(prefixData [2]byte, prefixSeq byte, model proto.Message, cdc codec.Codec, addressCodec address.Codec) (*AutoUInt64Table, error) {
+	table, err := newTable(prefixData, model, cdc, addressCodec)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func (a AutoUInt64Table) PrefixScan(store storetypes.KVStore, start, end uint64)
 // this as an endpoint to the public without further limits. See `LimitIterator`
 //
 // CONTRACT: No writes may happen within a domain while an iterator exists over it.
-func (a AutoUInt64Table) ReversePrefixScan(store storetypes.KVStore, start uint64, end uint64) (Iterator, error) {
+func (a AutoUInt64Table) ReversePrefixScan(store storetypes.KVStore, start, end uint64) (Iterator, error) {
 	return a.table.ReversePrefixScan(store, EncodeSequence(start), EncodeSequence(end))
 }
 

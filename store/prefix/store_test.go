@@ -4,17 +4,17 @@ import (
 	"crypto/rand"
 	"testing"
 
-	"cosmossdk.io/store/cachekv"
-
 	dbm "github.com/cosmos/cosmos-db"
+	tiavl "github.com/cosmos/iavl"
 	"github.com/stretchr/testify/require"
 
-	tiavl "github.com/cosmos/iavl"
-
+	"cosmossdk.io/log"
+	"cosmossdk.io/store/cachekv"
 	"cosmossdk.io/store/dbadapter"
 	"cosmossdk.io/store/gaskv"
 	"cosmossdk.io/store/iavl"
 	"cosmossdk.io/store/types"
+	"cosmossdk.io/store/wrapper"
 )
 
 // copied from iavl/store_test.go
@@ -30,6 +30,7 @@ type kvpair struct {
 }
 
 func genRandomKVPairs(t *testing.T) []kvpair {
+	t.Helper()
 	kvps := make([]kvpair, 20)
 
 	for i := 0; i < 20; i++ {
@@ -45,6 +46,7 @@ func genRandomKVPairs(t *testing.T) []kvpair {
 }
 
 func setRandomKVPairs(t *testing.T, store types.KVStore) []kvpair {
+	t.Helper()
 	kvps := genRandomKVPairs(t)
 	for _, kvp := range kvps {
 		store.Set(kvp.key, kvp.value)
@@ -53,6 +55,7 @@ func setRandomKVPairs(t *testing.T, store types.KVStore) []kvpair {
 }
 
 func testPrefixStore(t *testing.T, baseStore types.KVStore, prefix []byte) {
+	t.Helper()
 	prefixStore := NewStore(baseStore, prefix)
 	prefixPrefixStore := NewStore(prefixStore, []byte("prefix"))
 
@@ -88,9 +91,8 @@ func testPrefixStore(t *testing.T, baseStore types.KVStore, prefix []byte) {
 }
 
 func TestIAVLStorePrefix(t *testing.T) {
-	db := dbm.NewMemDB()
-	tree, err := tiavl.NewMutableTree(db, cacheSize, false)
-	require.NoError(t, err)
+	db := wrapper.NewDBWrapper(dbm.NewMemDB())
+	tree := tiavl.NewMutableTree(db, cacheSize, false, log.NewNopLogger())
 	iavlStore := iavl.UnsafeNewStore(tree)
 
 	testPrefixStore(t, iavlStore, []byte("test"))
@@ -248,39 +250,45 @@ func mockStoreWithStuff() types.KVStore {
 	store.Set(bz("key3"), bz("value3"))
 	store.Set(bz("something"), bz("else"))
 	store.Set(bz("k"), bz("val"))
-	store.Set(bz("ke"), bz("valu"))
+	store.Set(bz("ke"), bz("value"))
 	store.Set(bz("kee"), bz("valuu"))
 	return store
 }
 
-func checkValue(t *testing.T, store types.KVStore, key []byte, expected []byte) {
+func checkValue(t *testing.T, store types.KVStore, key, expected []byte) {
+	t.Helper()
 	bz := store.Get(key)
 	require.Equal(t, expected, bz)
 }
 
 func checkValid(t *testing.T, itr types.Iterator, expected bool) {
+	t.Helper()
 	valid := itr.Valid()
 	require.Equal(t, expected, valid)
 }
 
 func checkNext(t *testing.T, itr types.Iterator, expected bool) {
+	t.Helper()
 	itr.Next()
 	valid := itr.Valid()
 	require.Equal(t, expected, valid)
 }
 
 func checkDomain(t *testing.T, itr types.Iterator, start, end []byte) {
+	t.Helper()
 	ds, de := itr.Domain()
 	require.Equal(t, start, ds)
 	require.Equal(t, end, de)
 }
 
 func checkItem(t *testing.T, itr types.Iterator, key, value []byte) {
+	t.Helper()
 	require.Exactly(t, key, itr.Key())
 	require.Exactly(t, value, itr.Value())
 }
 
 func checkInvalid(t *testing.T, itr types.Iterator) {
+	t.Helper()
 	checkValid(t, itr, false)
 	checkKeyPanics(t, itr)
 	checkValuePanics(t, itr)
@@ -288,14 +296,17 @@ func checkInvalid(t *testing.T, itr types.Iterator) {
 }
 
 func checkKeyPanics(t *testing.T, itr types.Iterator) {
+	t.Helper()
 	require.Panics(t, func() { itr.Key() })
 }
 
 func checkValuePanics(t *testing.T, itr types.Iterator) {
+	t.Helper()
 	require.Panics(t, func() { itr.Value() })
 }
 
 func checkNextPanics(t *testing.T, itr types.Iterator) {
+	t.Helper()
 	require.Panics(t, func() { itr.Next() })
 }
 

@@ -1,22 +1,16 @@
 package keeper
 
-import (
-	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/x/crisis/exported"
-	v2 "github.com/cosmos/cosmos-sdk/x/crisis/migrations/v2"
-)
+import "context"
 
 // Migrator is a struct for handling in-place state migrations.
 type Migrator struct {
-	keeper         *Keeper
-	legacySubspace exported.Subspace
+	keeper *Keeper
 }
 
 // NewMigrator returns a new Migrator.
-func NewMigrator(k *Keeper, ss exported.Subspace) Migrator {
+func NewMigrator(k *Keeper) Migrator {
 	return Migrator{
-		keeper:         k,
-		legacySubspace: ss,
+		keeper: k,
 	}
 }
 
@@ -24,6 +18,6 @@ func NewMigrator(k *Keeper, ss exported.Subspace) Migrator {
 // version 2. Specifically, it takes the parameters that are currently stored
 // and managed by the x/params modules and stores them directly into the x/crisis
 // module state.
-func (m Migrator) Migrate1to2(ctx sdk.Context) error {
-	return v2.MigrateStore(ctx, m.keeper.storeKey, m.legacySubspace, m.keeper.cdc)
+func (m Migrator) Migrate1to2(ctx context.Context) error {
+	return nil
 }

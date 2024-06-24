@@ -2,16 +2,26 @@ package runtime
 
 import (
 	"fmt"
+	"os"
+	"slices"
 
-	"cosmossdk.io/core/store"
-
-	abci "github.com/cometbft/cometbft/abci/types"
+	"github.com/cosmos/gogoproto/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoregistry"
 
 	runtimev1alpha1 "cosmossdk.io/api/cosmos/app/runtime/v1alpha1"
 	appv1alpha1 "cosmossdk.io/api/cosmos/app/v1alpha1"
+	autocliv1 "cosmossdk.io/api/cosmos/autocli/v1"
+	reflectionv1 "cosmossdk.io/api/cosmos/reflection/v1"
+	"cosmossdk.io/core/app"
 	"cosmossdk.io/core/appmodule"
+	"cosmossdk.io/core/comet"
+	"cosmossdk.io/core/genesis"
+	"cosmossdk.io/core/legacy"
+	"cosmossdk.io/core/log"
+	"cosmossdk.io/core/store"
 	"cosmossdk.io/depinject"
-
+	"cosmossdk.io/depinject/appconfig"
 	storetypes "cosmossdk.io/store/types"
 
 	"github.com/cosmos/cosmos-sdk/baseapp"
@@ -19,21 +29,50 @@ import (
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	"github.com/cosmos/cosmos-sdk/std"
 	"github.com/cosmos/cosmos-sdk/types/module"
+	"github.com/cosmos/cosmos-sdk/types/msgservice"
 )
 
+// appModule defines runtime as an AppModule
 type appModule struct {
 	app *App
 }
 
-func (m appModule) RegisterServices(configurator module.Configurator) {
+func (m appModule) IsOnePerModuleType() {}
+func (m appModule) IsAppModule()        {}
+
+func (m appModule) RegisterServices(configurator module.Configurator) { // nolint:staticcheck // SA1019: Configurator is deprecated but still used in runtime v1.
 	err := m.app.registerRuntimeServices(configurator)
 	if err != nil {
 		panic(err)
 	}
 }
 
-func (m appModule) IsOnePerModuleType() {}
-func (m appModule) IsAppModule()        {}
+func (m appModule) AutoCLIOptions() *autocliv1.ModuleOptions {
+	return &autocliv1.ModuleOptions{
+		Query: &autocliv1.ServiceCommandDescriptor{
+			SubCommands: map[string]*autocliv1.ServiceCommandDescriptor{
+				"autocli": {
+					Service: autocliv1.Query_ServiceDesc.ServiceName,
+					RpcCommandOptions: []*autocliv1.RpcCommandOptions{
+						{
+							RpcMethod: "AppOptions",
+							Short:     "Query the custom autocli options",
+						},
+					},
+				},
+				"reflection": {
+					Service: reflectionv1.ReflectionService_ServiceDesc.ServiceName,
+					RpcCommandOptions: []*autocliv1.RpcCommandOptions{
+						{
+							RpcMethod: "FileDescriptors",
+							Short:     "Query the app's protobuf file descriptors",
+						},
+					},
+				},
+			},
+		},
+	}
+}
 
 var (
 	_ appmodule.AppModule = appModule{}
@@ -48,77 +87,92 @@ type BaseAppOption func(*baseapp.BaseApp)
 func (b BaseAppOption) IsManyPerContainerType() {}
 
 func init() {
-	appmodule.Register(&runtimev1alpha1.Module{},
-		appmodule.Provide(
+	appconfig.RegisterModule(&runtimev1alpha1.Module{},
+		appconfig.Provide(
 			ProvideApp,
+			// to decouple runtime from sdk/codec ProvideInterfaceReistry can be registered from the app
+			// i.e. in the call to depinject.Inject(...)
+			codec.ProvideInterfaceRegistry,
+			codec.ProvideLegacyAmino,
+			codec.ProvideProtoCodec,
+			codec.ProvideAddressCodec,
 			ProvideKVStoreKey,
 			ProvideTransientStoreKey,
 			ProvideMemoryStoreKey,
-			ProvideDeliverTx,
-			ProvideKVStoreService,
-			ProvideMemoryStoreService,
+			ProvideGenesisTxHandler,
+			ProvideEnvironment,
 			ProvideTransientStoreService,
+			ProvideModuleManager,
+			ProvideAppVersionModifier,
+			ProvideCometService,
 		),
-		appmodule.Invoke(SetupAppBuilder),
+		appconfig.Invoke(SetupAppBuilder),
 	)
 }
 
-func ProvideApp() (
-	codectypes.InterfaceRegistry,
-	codec.Codec,
-	*codec.LegacyAmino,
+func ProvideApp(
+	interfaceRegistry codectypes.InterfaceRegistry,
+	amino legacy.Amino,
+	protoCodec *codec.ProtoCodec,
+) (
 	*AppBuilder,
-	codec.ProtoCodecMarshaler,
 	*baseapp.MsgServiceRouter,
+	*baseapp.GRPCQueryRouter,
 	appmodule.AppModule,
+	protodesc.Resolver,
+	protoregistry.MessageTypeResolver,
+	error,
 ) {
-	interfaceRegistry := codectypes.NewInterfaceRegistry()
-	amino := codec.NewLegacyAmino()
+	protoFiles := proto.HybridResolver
+	protoTypes := protoregistry.GlobalTypes
+
+	// At startup, check that all proto annotations are correct.
+	if err := msgservice.ValidateProtoAnnotations(protoFiles); err != nil {
+		// Once we switch to using protoreflect-based ante handlers, we might
+		// want to panic here instead of logging a warning.
+		_, _ = fmt.Fprintln(os.Stderr, err.Error())
+	}
 
 	std.RegisterInterfaces(interfaceRegistry)
 	std.RegisterLegacyAminoCodec(amino)
 
-	cdc := codec.NewProtoCodec(interfaceRegistry)
 	msgServiceRouter := baseapp.NewMsgServiceRouter()
+	grpcQueryRouter := baseapp.NewGRPCQueryRouter()
 	app := &App{
 		storeKeys:         nil,
 		interfaceRegistry: interfaceRegistry,
-		cdc:               cdc,
+		cdc:               protoCodec,
 		amino:             amino,
-		basicManager:      module.BasicManager{},
 		msgServiceRouter:  msgServiceRouter,
+		grpcQueryRouter:   grpcQueryRouter,
 	}
 	appBuilder := &AppBuilder{app}
 
-	return interfaceRegistry, cdc, amino, appBuilder, cdc, msgServiceRouter, appModule{app}
+	return appBuilder, msgServiceRouter, grpcQueryRouter, appModule{app}, protoFiles, protoTypes, nil
 }
 
 type AppInputs struct {
 	depinject.In
 
+	Logger            log.Logger
 	AppConfig         *appv1alpha1.Config
 	Config            *runtimev1alpha1.Module
 	AppBuilder        *AppBuilder
-	Modules           map[string]appmodule.AppModule
+	ModuleManager     *module.Manager
 	BaseAppOptions    []BaseAppOption
 	InterfaceRegistry codectypes.InterfaceRegistry
-	LegacyAmino       *codec.LegacyAmino
+	LegacyAmino       legacy.Amino
 }
 
 func SetupAppBuilder(inputs AppInputs) {
 	app := inputs.AppBuilder.app
 	app.baseAppOptions = inputs.BaseAppOptions
 	app.config = inputs.Config
-	app.ModuleManager = module.NewManagerFromMap(inputs.Modules)
 	app.appConfig = inputs.AppConfig
-
-	for name, mod := range inputs.Modules {
-		if basicMod, ok := mod.(module.AppModuleBasic); ok {
-			app.basicManager[name] = basicMod
-			basicMod.RegisterInterfaces(inputs.InterfaceRegistry)
-			basicMod.RegisterLegacyAminoCodec(inputs.LegacyAmino)
-		}
-	}
+	app.logger = inputs.Logger
+	app.ModuleManager = inputs.ModuleManager
+	app.ModuleManager.RegisterInterfaces(inputs.InterfaceRegistry)
+	app.ModuleManager.RegisterLegacyAminoCodec(inputs.LegacyAmino)
 }
 
 func registerStoreKey(wrapper *AppBuilder, key storetypes.StoreKey) {
@@ -134,7 +188,15 @@ func storeKeyOverride(config *runtimev1alpha1.Module, moduleName string) *runtim
 	return nil
 }
 
-func ProvideKVStoreKey(config *runtimev1alpha1.Module, key depinject.ModuleKey, app *AppBuilder) *storetypes.KVStoreKey {
+func ProvideKVStoreKey(
+	config *runtimev1alpha1.Module,
+	key depinject.ModuleKey,
+	app *AppBuilder,
+) *storetypes.KVStoreKey {
+	if slices.Contains(config.SkipStoreKeys, key.Name()) {
+		return nil
+	}
+
 	override := storeKeyOverride(config, key.Name())
 
 	var storeKeyName string
@@ -149,35 +211,90 @@ func ProvideKVStoreKey(config *runtimev1alpha1.Module, key depinject.ModuleKey, 
 	return storeKey
 }
 
-func ProvideTransientStoreKey(key depinject.ModuleKey, app *AppBuilder) *storetypes.TransientStoreKey {
+func ProvideTransientStoreKey(
+	config *runtimev1alpha1.Module,
+	key depinject.ModuleKey,
+	app *AppBuilder,
+) *storetypes.TransientStoreKey {
+	if slices.Contains(config.SkipStoreKeys, key.Name()) {
+		return nil
+	}
+
 	storeKey := storetypes.NewTransientStoreKey(fmt.Sprintf("transient:%s", key.Name()))
 	registerStoreKey(app, storeKey)
 	return storeKey
 }
 
-func ProvideMemoryStoreKey(key depinject.ModuleKey, app *AppBuilder) *storetypes.MemoryStoreKey {
+func ProvideMemoryStoreKey(
+	config *runtimev1alpha1.Module,
+	key depinject.ModuleKey,
+	app *AppBuilder,
+) *storetypes.MemoryStoreKey {
+	if slices.Contains(config.SkipStoreKeys, key.Name()) {
+		return nil
+	}
+
 	storeKey := storetypes.NewMemoryStoreKey(fmt.Sprintf("memory:%s", key.Name()))
 	registerStoreKey(app, storeKey)
 	return storeKey
 }
 
-func ProvideDeliverTx(appBuilder *AppBuilder) func(abci.RequestDeliverTx) abci.ResponseDeliverTx {
-	return func(tx abci.RequestDeliverTx) abci.ResponseDeliverTx {
-		return appBuilder.app.BaseApp.DeliverTx(tx)
+func ProvideModuleManager(modules map[string]appmodule.AppModule) *module.Manager {
+	return module.NewManagerFromMap(modules)
+}
+
+func ProvideGenesisTxHandler(appBuilder *AppBuilder) genesis.TxHandler {
+	return appBuilder.app
+}
+
+func ProvideEnvironment(
+	logger log.Logger,
+	config *runtimev1alpha1.Module,
+	key depinject.ModuleKey,
+	app *AppBuilder,
+	msgServiceRouter *baseapp.MsgServiceRouter,
+	queryServiceRouter *baseapp.GRPCQueryRouter,
+) (store.KVStoreService, store.MemoryStoreService, appmodule.Environment) {
+	var (
+		kvService    store.KVStoreService     = failingStoreService{}
+		memKvService store.MemoryStoreService = failingStoreService{}
+	)
+
+	// skips modules that have no store
+	if !slices.Contains(config.SkipStoreKeys, key.Name()) {
+		storeKey := ProvideKVStoreKey(config, key, app)
+		kvService = kvStoreService{key: storeKey}
+
+		memStoreKey := ProvideMemoryStoreKey(config, key, app)
+		memKvService = memStoreService{key: memStoreKey}
 	}
+
+	return kvService, memKvService, NewEnvironment(
+		kvService,
+		logger.With(log.ModuleKey, fmt.Sprintf("x/%s", key.Name())),
+		EnvWithMsgRouterService(msgServiceRouter),
+		EnvWithQueryRouterService(queryServiceRouter),
+		EnvWithMemStoreService(memKvService),
+	)
 }
 
-func ProvideKVStoreService(config *runtimev1alpha1.Module, key depinject.ModuleKey, app *AppBuilder) store.KVStoreService {
-	storeKey := ProvideKVStoreKey(config, key, app)
-	return kvStoreService{key: storeKey}
-}
+func ProvideTransientStoreService(
+	config *runtimev1alpha1.Module,
+	key depinject.ModuleKey,
+	app *AppBuilder,
+) store.TransientStoreService {
+	storeKey := ProvideTransientStoreKey(config, key, app)
+	if storeKey == nil {
+		return failingStoreService{}
+	}
 
-func ProvideMemoryStoreService(key depinject.ModuleKey, app *AppBuilder) store.MemoryStoreService {
-	storeKey := ProvideMemoryStoreKey(key, app)
-	return memStoreService{key: storeKey}
-}
-
-func ProvideTransientStoreService(key depinject.ModuleKey, app *AppBuilder) store.TransientStoreService {
-	storeKey := ProvideTransientStoreKey(key, app)
 	return transientStoreService{key: storeKey}
+}
+
+func ProvideAppVersionModifier(app *AppBuilder) app.VersionModifier {
+	return app.app
+}
+
+func ProvideCometService() comet.Service {
+	return NewContextAwareCometInfoService()
 }

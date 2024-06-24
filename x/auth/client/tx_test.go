@@ -7,24 +7,15 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"cosmossdk.io/depinject"
+	"cosmossdk.io/x/auth"
+	authclient "cosmossdk.io/x/auth/client"
+
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/codec"
-	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
-	cryptocodec "github.com/cosmos/cosmos-sdk/crypto/codec"
-	"github.com/cosmos/cosmos-sdk/crypto/keys/ed25519"
+	codectestutil "github.com/cosmos/cosmos-sdk/codec/testutil"
 	"github.com/cosmos/cosmos-sdk/testutil"
-	"github.com/cosmos/cosmos-sdk/testutil/testdata"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	authclient "github.com/cosmos/cosmos-sdk/x/auth/client"
-	"github.com/cosmos/cosmos-sdk/x/auth/migrations/legacytx"
-	authtestutil "github.com/cosmos/cosmos-sdk/x/auth/testutil"
-	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
-)
-
-var (
-	priv = ed25519.GenPrivKey()
-	addr = sdk.AccAddress(priv.PubKey().Address())
+	moduletestutil "github.com/cosmos/cosmos-sdk/types/module/testutil"
 )
 
 func TestParseQueryResponse(t *testing.T) {
@@ -45,51 +36,35 @@ func TestParseQueryResponse(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TODO: remove this and authclient.GetTxEncoder after the proto tx migration is complete
-func TestDefaultTxEncoder(t *testing.T) {
-	cdc := makeCodec()
-
-	defaultEncoder := legacytx.DefaultTxEncoder(cdc)
-	encoder := authclient.GetTxEncoder(cdc)
-
-	compareEncoders(t, defaultEncoder, encoder)
-}
-
 func TestReadTxFromFile(t *testing.T) {
 	t.Parallel()
-	var (
-		txCfg             client.TxConfig
-		interfaceRegistry codectypes.InterfaceRegistry
-	)
-	err := depinject.Inject(
-		authtestutil.AppConfig,
-		&interfaceRegistry,
-		&txCfg,
-	)
-	require.NoError(t, err)
+
+	encodingConfig := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{})
+	interfaceRegistry := encodingConfig.InterfaceRegistry
+	txConfig := encodingConfig.TxConfig
 
 	clientCtx := client.Context{}
 	clientCtx = clientCtx.WithInterfaceRegistry(interfaceRegistry)
-	clientCtx = clientCtx.WithTxConfig(txCfg)
+	clientCtx = clientCtx.WithTxConfig(txConfig)
 
 	feeAmount := sdk.Coins{sdk.NewInt64Coin("atom", 150)}
 	gasLimit := uint64(50000)
 	memo := "foomemo"
 
-	txBuilder := txCfg.NewTxBuilder()
+	txBuilder := txConfig.NewTxBuilder()
 	txBuilder.SetFeeAmount(feeAmount)
 	txBuilder.SetGasLimit(gasLimit)
 	txBuilder.SetMemo(memo)
 
 	// Write it to the file
-	encodedTx, err := txCfg.TxJSONEncoder()(txBuilder.GetTx())
+	encodedTx, err := txConfig.TxJSONEncoder()(txBuilder.GetTx())
 	require.NoError(t, err)
 
 	jsonTxFile := testutil.WriteToNewTempFile(t, string(encodedTx))
 	// Read it back
 	decodedTx, err := authclient.ReadTxFromFile(clientCtx, jsonTxFile.Name())
 	require.NoError(t, err)
-	txBldr, err := txCfg.WrapTxBuilder(decodedTx)
+	txBldr, err := txConfig.WrapTxBuilder(decodedTx)
 	require.NoError(t, err)
 	t.Log(txBuilder.GetTx())
 	t.Log(txBldr.GetTx())
@@ -97,24 +72,85 @@ func TestReadTxFromFile(t *testing.T) {
 	require.Equal(t, txBuilder.GetTx().GetFee(), txBldr.GetTx().GetFee())
 }
 
-func TestBatchScanner_Scan(t *testing.T) {
+func TestReadTxsFromFile(t *testing.T) {
 	t.Parallel()
-	var txGen client.TxConfig
-	err := depinject.Inject(
-		authtestutil.AppConfig,
-		&txGen,
-	)
-	require.NoError(t, err)
+
+	encodingConfig := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{})
+	interfaceRegistry := encodingConfig.InterfaceRegistry
+	txConfig := encodingConfig.TxConfig
 
 	clientCtx := client.Context{}
-	clientCtx = clientCtx.WithTxConfig(txGen)
+	clientCtx = clientCtx.WithInterfaceRegistry(interfaceRegistry)
+	clientCtx = clientCtx.WithTxConfig(txConfig)
+
+	// Set up 2 txs
+	txBuilders := make([]client.TxBuilder, 2)
+	// Set up tx 1
+	txBuilders[0] = txConfig.NewTxBuilder()
+	txBuilders[0].SetFeeAmount(sdk.Coins{sdk.NewInt64Coin("atom", 150)})
+	txBuilders[0].SetGasLimit(uint64(50000))
+	txBuilders[0].SetMemo("foomemo")
+	// Set up tx 2
+	txBuilders[1] = txConfig.NewTxBuilder()
+	txBuilders[1].SetFeeAmount(sdk.Coins{sdk.NewInt64Coin("atom", 200)})
+	txBuilders[1].SetGasLimit(uint64(60000))
+	txBuilders[1].SetMemo("foomemo2")
+
+	// Write txs to the file
+	encodedTx1, err := txConfig.TxJSONEncoder()(txBuilders[0].GetTx())
+	require.NoError(t, err)
+	encodedTx2, err := txConfig.TxJSONEncoder()(txBuilders[1].GetTx())
+	require.NoError(t, err)
+
+	tx1String := string(encodedTx1) + "\n"
+	tx2String := string(encodedTx2) + "\n"
+	jsonBatchTxsFile := testutil.WriteToNewTempFile(t, tx1String+tx2String)
+	jsonSingleTxFile := testutil.WriteToNewTempFile(t, tx1String)
+
+	// Read it back
+
+	// 2 txs case
+	decodedBatchTxs, err := authclient.ReadTxsFromFile(clientCtx, jsonBatchTxsFile.Name())
+	require.NoError(t, err)
+	require.Equal(t, len(decodedBatchTxs), 2)
+	for i, decodedTx := range decodedBatchTxs {
+		txBldr, err := txConfig.WrapTxBuilder(decodedTx)
+		require.NoError(t, err)
+
+		wantTx := txBuilders[i].GetTx()
+		gotTx := txBldr.GetTx()
+		require.Equal(t, wantTx.GetMemo(), gotTx.GetMemo())
+		require.Equal(t, wantTx.GetFee(), gotTx.GetFee())
+	}
+
+	// single tx case
+	decodedSingleTx, err := authclient.ReadTxsFromFile(clientCtx, jsonSingleTxFile.Name())
+	require.NoError(t, err)
+	require.Equal(t, len(decodedSingleTx), 1)
+	txBldr, err := txConfig.WrapTxBuilder(decodedSingleTx[0])
+	require.NoError(t, err)
+
+	wantTx := txBuilders[0].GetTx()
+	gotTx := txBldr.GetTx()
+	require.Equal(t, wantTx.GetMemo(), gotTx.GetMemo())
+	require.Equal(t, wantTx.GetFee(), gotTx.GetFee())
+}
+
+func TestBatchScanner_Scan(t *testing.T) {
+	t.Parallel()
+
+	encodingConfig := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, auth.AppModule{})
+	txConfig := encodingConfig.TxConfig
+
+	clientCtx := client.Context{}
+	clientCtx = clientCtx.WithTxConfig(txConfig)
 
 	// generate some tx JSON
-	bldr := txGen.NewTxBuilder()
+	bldr := txConfig.NewTxBuilder()
 	bldr.SetGasLimit(50000)
 	bldr.SetFeeAmount(sdk.NewCoins(sdk.NewInt64Coin("atom", 150)))
 	bldr.SetMemo("foomemo")
-	txJSON, err := txGen.TxJSONEncoder()(bldr.GetTx())
+	txJSON, err := txConfig.TxJSONEncoder()(bldr.GetTx())
 	require.NoError(t, err)
 
 	// use the tx JSON to generate some tx batches (it doesn't matter that we use the same JSON because we don't care about the actual context)
@@ -149,24 +185,4 @@ func TestBatchScanner_Scan(t *testing.T) {
 			require.Equal(t, tt.numTxs, i)
 		})
 	}
-}
-
-func compareEncoders(t *testing.T, expected sdk.TxEncoder, actual sdk.TxEncoder) {
-	msgs := []sdk.Msg{testdata.NewTestMsg(addr)}
-	tx := legacytx.NewStdTx(msgs, legacytx.StdFee{}, []legacytx.StdSignature{}, "") //nolint:staticcheck // SA1019: legacytx.StdFee is deprecated: use FeeTx interface instead
-
-	defaultEncoderBytes, err := expected(tx)
-	require.NoError(t, err)
-	encoderBytes, err := actual(tx)
-	require.NoError(t, err)
-	require.Equal(t, defaultEncoderBytes, encoderBytes)
-}
-
-func makeCodec() *codec.LegacyAmino {
-	cdc := codec.NewLegacyAmino()
-	sdk.RegisterLegacyAminoCodec(cdc)
-	cryptocodec.RegisterCrypto(cdc)
-	authtypes.RegisterLegacyAminoCodec(cdc)
-	cdc.RegisterConcrete(testdata.TestMsg{}, "cosmos-sdk/Test", nil)
-	return cdc
 }

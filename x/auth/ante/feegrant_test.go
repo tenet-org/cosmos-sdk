@@ -1,16 +1,20 @@
 package ante_test
 
 import (
+	"context"
 	"errors"
 	"math/rand"
 	"testing"
 	"time"
 
-	"github.com/cometbft/cometbft/crypto"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 
-	storetypes "cosmossdk.io/store/types"
+	"cosmossdk.io/x/auth/ante"
+	authsign "cosmossdk.io/x/auth/signing"
+	"cosmossdk.io/x/auth/testutil"
+	"cosmossdk.io/x/auth/tx"
+	authtypes "cosmossdk.io/x/auth/types"
 
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/codec"
@@ -20,11 +24,6 @@ import (
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
 	"github.com/cosmos/cosmos-sdk/types/simulation"
 	"github.com/cosmos/cosmos-sdk/types/tx/signing"
-	"github.com/cosmos/cosmos-sdk/x/auth/ante"
-	authsign "github.com/cosmos/cosmos-sdk/x/auth/signing"
-	"github.com/cosmos/cosmos-sdk/x/auth/testutil"
-	"github.com/cosmos/cosmos-sdk/x/auth/tx"
-	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 )
 
 func TestDeductFeesNoDelegation(t *testing.T) {
@@ -57,13 +56,14 @@ func TestDeductFeesNoDelegation(t *testing.T) {
 		},
 		"paying with no account": {
 			fee:   1,
-			valid: false,
-			err:   sdkerrors.ErrUnknownAddress,
+			valid: true,
 			malleate: func(suite *AnteTestSuite) (TestAccount, sdk.AccAddress) {
 				// Do not register the account
 				priv, _, addr := testdata.KeyTestPubAddr()
+				acc := authtypes.NewBaseAccountWithAddress(addr)
+				suite.bankKeeper.EXPECT().SendCoinsFromAccountToModule(gomock.Any(), acc.GetAddress(), authtypes.FeeCollectorName, gomock.Any()).Return(nil).Times(2)
 				return TestAccount{
-					acc:  authtypes.NewBaseAccountWithAddress(addr),
+					acc:  acc,
 					priv: priv,
 				}, nil
 			},
@@ -78,8 +78,7 @@ func TestDeductFeesNoDelegation(t *testing.T) {
 		},
 		"no fee with no account": {
 			fee:   0,
-			valid: false,
-			err:   sdkerrors.ErrUnknownAddress,
+			valid: true,
 			malleate: func(suite *AnteTestSuite) (TestAccount, sdk.AccAddress) {
 				// Do not register the account
 				priv, _, addr := testdata.KeyTestPubAddr()
@@ -97,9 +96,9 @@ func TestDeductFeesNoDelegation(t *testing.T) {
 			valid: true,
 			malleate: func(suite *AnteTestSuite) (TestAccount, sdk.AccAddress) {
 				accs := suite.CreateTestAccounts(2)
+
 				suite.feeGrantKeeper.EXPECT().UseGrantedFees(gomock.Any(), accs[1].acc.GetAddress(), accs[0].acc.GetAddress(), gomock.Any(), gomock.Any()).Return(nil).Times(2)
 				suite.bankKeeper.EXPECT().SendCoinsFromAccountToModule(gomock.Any(), accs[1].acc.GetAddress(), authtypes.FeeCollectorName, gomock.Any()).Return(nil).Times(2)
-
 				return accs[0], accs[1].acc.GetAddress()
 			},
 		},
@@ -146,7 +145,9 @@ func TestDeductFeesNoDelegation(t *testing.T) {
 		tc := stc // to make scopelint happy
 		t.Run(name, func(t *testing.T) {
 			suite := SetupTestSuite(t, false)
-			protoTxCfg := tx.NewTxConfig(codec.NewProtoCodec(suite.encCfg.InterfaceRegistry), tx.DefaultSignModes)
+			cdc := codec.NewProtoCodec(suite.encCfg.InterfaceRegistry)
+			signingCtx := suite.encCfg.InterfaceRegistry.SigningContext()
+			protoTxCfg := tx.NewTxConfig(cdc, signingCtx.AddressCodec(), signingCtx.ValidatorAddressCodec(), tx.DefaultSignModes)
 			// this just tests our handler
 			dfd := ante.NewDeductFeeDecorator(suite.accountKeeper, suite.bankKeeper, suite.feeGrantKeeper, nil)
 			feeAnteHandler := sdk.ChainAnteDecorators(dfd)
@@ -168,14 +169,18 @@ func TestDeductFeesNoDelegation(t *testing.T) {
 			var defaultGenTxGas uint64 = 10000000
 			tx, err := genTxWithFeeGranter(protoTxCfg, msgs, fee, defaultGenTxGas, suite.ctx.ChainID(), accNums, seqs, feeAcc, privs...)
 			require.NoError(t, err)
-			_, err = feeAnteHandler(suite.ctx, tx, false) // tests only feegrant ante
+			txBytes, err := protoTxCfg.TxEncoder()(tx)
+			require.NoError(t, err)
+			bytesCtx := suite.ctx.WithTxBytes(txBytes)
+			require.NoError(t, err)
+			_, err = feeAnteHandler(bytesCtx, tx, false) // tests only feegrant ante
 			if tc.valid {
 				require.NoError(t, err)
 			} else {
 				testutil.AssertError(t, err, tc.err, tc.errMsg)
 			}
 
-			_, err = anteHandlerStack(suite.ctx, tx, false) // tests while stack
+			_, err = anteHandlerStack(bytesCtx, tx, false) // tests whole stack
 			if tc.valid {
 				require.NoError(t, err)
 			} else {
@@ -183,11 +188,6 @@ func TestDeductFeesNoDelegation(t *testing.T) {
 			}
 		})
 	}
-}
-
-// don't consume any gas
-func SigGasNoConsumer(meter storetypes.GasMeter, sig []byte, pubkey crypto.PubKey, params authtypes.Params) error {
-	return nil
 }
 
 func genTxWithFeeGranter(gen client.TxConfig, msgs []sdk.Msg, feeAmt sdk.Coins, gas uint64, chainID string, accNums,
@@ -200,7 +200,7 @@ func genTxWithFeeGranter(gen client.TxConfig, msgs []sdk.Msg, feeAmt sdk.Coins, 
 
 	memo := simulation.RandStringOfLength(r, simulation.RandIntBetween(r, 0, 100))
 
-	signMode := gen.SignModeHandler().DefaultMode()
+	signMode := signing.SignMode_SIGN_MODE_DIRECT
 
 	// 1st round: set SignatureV2 with empty signatures, to set correct
 	// signer infos.
@@ -234,8 +234,10 @@ func genTxWithFeeGranter(gen client.TxConfig, msgs []sdk.Msg, feeAmt sdk.Coins, 
 			ChainID:       chainID,
 			AccountNumber: accNums[i],
 			Sequence:      accSeqs[i],
+			PubKey:        p.PubKey(),
 		}
-		signBytes, err := gen.SignModeHandler().GetSignBytes(signMode, signerData, tx.GetTx())
+		signBytes, err := authsign.GetSignBytesAdapter(
+			context.Background(), gen.SignModeHandler(), signMode, signerData, tx.GetTx())
 		if err != nil {
 			panic(err)
 		}

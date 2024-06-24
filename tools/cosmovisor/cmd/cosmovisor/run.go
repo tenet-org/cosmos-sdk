@@ -1,30 +1,35 @@
 package main
 
 import (
-	"cosmossdk.io/log"
-	"cosmossdk.io/tools/cosmovisor"
+	"fmt"
+	"strings"
+
 	"github.com/spf13/cobra"
+
+	"cosmossdk.io/tools/cosmovisor"
 )
 
-func init() {
-	rootCmd.AddCommand(runCmd)
-}
-
 var runCmd = &cobra.Command{
-	Use:                "run",
-	Short:              "Run an APP command.",
+	Use:   "run",
+	Short: "Run an APP command.",
+	Long: `Run an APP command. This command is intended to be used by the cosmovisor binary.
+Provide cosmovisor config file path in command args or set env variables to load configuration.
+`,
 	SilenceUsage:       true,
 	DisableFlagParsing: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		logger := cmd.Context().Value(log.ContextKey).(log.Logger)
+	RunE: func(_ *cobra.Command, args []string) error {
+		cfgPath, args, err := parseCosmovisorConfig(args)
+		if err != nil {
+			return fmt.Errorf("failed to parse cosmovisor config: %w", err)
+		}
 
-		return Run(logger, args)
+		return run(cfgPath, args)
 	},
 }
 
-// Run runs the configured program with the given args and monitors it for upgrades.
-func Run(logger log.Logger, args []string, options ...RunOption) error {
-	cfg, err := cosmovisor.GetConfigFromEnv()
+// run runs the configured program with the given args and monitors it for upgrades.
+func run(cfgPath string, args []string, options ...RunOption) error {
+	cfg, err := cosmovisor.GetConfigFromFile(cfgPath)
 	if err != nil {
 		return err
 	}
@@ -34,6 +39,7 @@ func Run(logger log.Logger, args []string, options ...RunOption) error {
 		opt(&runCfg)
 	}
 
+	logger := cfg.Logger(runCfg.StdOut)
 	launcher, err := cosmovisor.NewLauncher(logger, cfg)
 	if err != nil {
 		return err
@@ -51,4 +57,25 @@ func Run(logger log.Logger, args []string, options ...RunOption) error {
 	}
 
 	return err
+}
+
+func parseCosmovisorConfig(args []string) (string, []string, error) {
+	var configFilePath string
+	for i, arg := range args {
+		// Check if the argument is the config flag
+		if strings.EqualFold(arg, fmt.Sprintf("--%s", cosmovisor.FlagCosmovisorConfig)) ||
+			strings.EqualFold(arg, fmt.Sprintf("-%s", cosmovisor.FlagCosmovisorConfig)) {
+			// Check if there is an argument after the flag which should be the config file path
+			if i+1 >= len(args) {
+				return "", nil, fmt.Errorf("--%s requires an argument", cosmovisor.FlagCosmovisorConfig)
+			}
+
+			configFilePath = args[i+1]
+			// Remove the flag and its value from the arguments
+			args = append(args[:i], args[i+2:]...)
+			break
+		}
+	}
+
+	return configFilePath, args, nil
 }

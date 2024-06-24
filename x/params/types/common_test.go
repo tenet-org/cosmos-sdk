@@ -6,8 +6,7 @@ import (
 	"time"
 
 	storetypes "cosmossdk.io/store/types"
-
-	"github.com/cosmos/cosmos-sdk/x/params/types"
+	"cosmossdk.io/x/params/types"
 )
 
 var (
@@ -79,18 +78,18 @@ func validateMaxRedelegationEntries(i interface{}) error {
 
 func (p *params) ParamSetPairs() types.ParamSetPairs {
 	return types.ParamSetPairs{
-		{keyUnbondingTime, &p.UnbondingTime, validateUnbondingTime},
-		{keyMaxValidators, &p.MaxValidators, validateMaxValidators},
-		{keyBondDenom, &p.BondDenom, validateBondDenom},
+		types.ParamSetPair{Key: keyUnbondingTime, Value: &p.UnbondingTime, ValidatorFn: validateUnbondingTime},
+		types.ParamSetPair{Key: keyMaxValidators, Value: &p.MaxValidators, ValidatorFn: validateMaxValidators},
+		types.ParamSetPair{Key: keyBondDenom, Value: &p.BondDenom, ValidatorFn: validateBondDenom},
 	}
 }
 
 func (p *paramsV2) ParamSetPairs() types.ParamSetPairs {
 	return types.ParamSetPairs{
-		{keyUnbondingTime, &p.UnbondingTime, validateUnbondingTime},
-		{keyMaxValidators, &p.MaxValidators, validateMaxValidators},
-		{keyBondDenom, &p.BondDenom, validateBondDenom},
-		{keyMaxRedelegationEntries, &p.MaxRedelegationEntries, validateMaxRedelegationEntries},
+		types.ParamSetPair{Key: keyUnbondingTime, Value: &p.UnbondingTime, ValidatorFn: validateUnbondingTime},
+		types.ParamSetPair{Key: keyMaxValidators, Value: &p.MaxValidators, ValidatorFn: validateMaxValidators},
+		types.ParamSetPair{Key: keyBondDenom, Value: &p.BondDenom, ValidatorFn: validateBondDenom},
+		types.ParamSetPair{Key: keyMaxRedelegationEntries, Value: &p.MaxRedelegationEntries, ValidatorFn: validateMaxRedelegationEntries},
 	}
 }
 

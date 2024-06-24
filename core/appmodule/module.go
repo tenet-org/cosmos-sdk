@@ -3,20 +3,35 @@ package appmodule
 import (
 	"context"
 
-	"cosmossdk.io/depinject"
 	"google.golang.org/grpc"
+
+	"cosmossdk.io/core/appmodule/v2"
+	"cosmossdk.io/core/legacy"
 )
 
 // AppModule is a tag interface for app module implementations to use as a basis
 // for extension interfaces. It provides no functionality itself, but is the
 // type that all valid app modules should provide so that they can be identified
 // by other modules (usually via depinject) as app modules.
-type AppModule interface {
-	depinject.OnePerModuleType
+type AppModule = appmodule.AppModule
 
-	// IsAppModule is a dummy method to tag a struct as implementing an AppModule.
-	IsAppModule()
-}
+// HasPreBlocker is the extension interface that modules should implement to run
+// custom logic before BeginBlock.
+type HasPreBlocker = appmodule.HasPreBlocker
+
+// HasBeginBlocker is the extension interface that modules should implement to run
+// custom logic before transaction processing in a block.
+type HasBeginBlocker = appmodule.HasBeginBlocker
+
+// HasEndBlocker is the extension interface that modules should implement to run
+// custom logic after transaction processing in a block.
+type HasEndBlocker = appmodule.HasEndBlocker
+
+// HasRegisterInterfaces is the interface for modules to register their msg types.
+type HasRegisterInterfaces = appmodule.HasRegisterInterfaces
+
+// ValidatorUpdate defines a validator update.
+type ValidatorUpdate = appmodule.ValidatorUpdate
 
 // HasServices is the extension interface that modules should implement to register
 // implementations of services defined in .proto files.
@@ -38,22 +53,26 @@ type HasServices interface {
 	RegisterServices(grpc.ServiceRegistrar) error
 }
 
-// HasBeginBlocker is the extension interface that modules should implement to run
-// custom logic before transaction processing in a block.
-type HasBeginBlocker interface {
-	AppModule
-
-	// BeginBlock is a method that will be run before transactions are processed in
-	// a block.
-	BeginBlock(context.Context) error
+// HasPrepareCheckState is an extension interface that contains information about the AppModule
+// and PrepareCheckState.
+type HasPrepareCheckState interface {
+	appmodule.AppModule
+	PrepareCheckState(context.Context) error
 }
 
-// HasEndBlocker is the extension interface that modules should implement to run
-// custom logic after transaction processing in a block.
-type HasEndBlocker interface {
-	AppModule
+// HasPrecommit is an extension interface that contains information about the appmodule.AppModule and Precommit.
+type HasPrecommit interface {
+	appmodule.AppModule
+	Precommit(context.Context) error
+}
 
-	// EndBlock is a method that will be run after transactions are processed in
-	// a block.
-	EndBlock(context.Context) error
+// HasName is an extension interface that must return the appmodule.AppModule's Name.
+type HasName interface {
+	Name() string
+}
+
+// HasAminoCodec is an extension interface that module must implement to support JSON encoding and decoding of its types
+// through amino.  This is used in genesis & the CLI client.
+type HasAminoCodec interface {
+	RegisterLegacyAminoCodec(legacy.Amino)
 }

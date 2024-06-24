@@ -9,9 +9,10 @@ import (
 
 	"github.com/cosmos/gogoproto/proto"
 
+	"cosmossdk.io/x/auth/types"
+
 	"github.com/cosmos/cosmos-sdk/testutil/testdata"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/x/auth/types"
 )
 
 const addrStr = "cosmos13c3d4wq2t22dl0dstraf8jc3f902e3fsy9n3wv"
@@ -222,7 +223,7 @@ func (suite *KeeperTestSuite) TestGRPCQueryAccountAddressByID() {
 	}
 }
 
-func (suite *KeeperTestSuite) TestGRPCQueryParameters() {
+func (suite *KeeperTestSuite) TestGRPCQueryParams() {
 	var (
 		req       *types.QueryParamsRequest
 		expParams types.Params
@@ -520,4 +521,18 @@ func (suite *KeeperTestSuite) TestQueryAccountInfo() {
 	pkBz, err := proto.Marshal(pk)
 	suite.Require().NoError(err)
 	suite.Require().Equal(pkBz, res.Info.PubKey.Value)
+}
+
+func (suite *KeeperTestSuite) TestQueryAccountInfoWithoutPubKey() {
+	acc := suite.accountKeeper.NewAccountWithAddress(suite.ctx, addr)
+	suite.accountKeeper.SetAccount(suite.ctx, acc)
+
+	res, err := suite.queryClient.AccountInfo(context.Background(), &types.QueryAccountInfoRequest{
+		Address: addr.String(),
+	})
+
+	suite.Require().NoError(err)
+	suite.Require().NotNil(res.Info)
+	suite.Require().Equal(addr.String(), res.Info.Address)
+	suite.Require().Nil(res.Info.PubKey)
 }

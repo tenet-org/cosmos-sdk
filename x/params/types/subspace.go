@@ -2,6 +2,7 @@ package types
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 
 	"cosmossdk.io/store/prefix"
@@ -32,7 +33,7 @@ type Subspace struct {
 }
 
 // NewSubspace constructs a store with namestore
-func NewSubspace(cdc codec.BinaryCodec, legacyAmino *codec.LegacyAmino, key storetypes.StoreKey, tkey storetypes.StoreKey, name string) Subspace {
+func NewSubspace(cdc codec.BinaryCodec, legacyAmino *codec.LegacyAmino, key, tkey storetypes.StoreKey, name string) Subspace {
 	return Subspace{
 		cdc:         cdc,
 		legacyAmino: legacyAmino,
@@ -57,9 +58,7 @@ func (s Subspace) WithKeyTable(table KeyTable) Subspace {
 		panic("WithKeyTable() called on already initialized Subspace")
 	}
 
-	for k, v := range table.m {
-		s.table.m[k] = v
-	}
+	maps.Copy(s.table.m, table.m)
 
 	// Allocate additional capacity for Subspace.name
 	// So we don't have to allocate extra space each time appending to the key
@@ -93,7 +92,7 @@ func (s Subspace) Validate(ctx sdk.Context, key []byte, value interface{}) error
 	}
 
 	if err := attr.vfn(value); err != nil {
-		return fmt.Errorf("invalid parameter value: %s", err)
+		return fmt.Errorf("invalid parameter value: %w", err)
 	}
 
 	return nil

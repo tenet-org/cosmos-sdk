@@ -2,8 +2,7 @@
 
 PACKAGES_NOSIMULATION=$(shell go list ./... | grep -v '/simulation')
 PACKAGES_SIMTEST=$(shell go list ./... | grep '/simulation')
-export VERSION := $(shell echo $(shell git describe --always --match "v*") | sed 's/^v//')
-export CMTVERSION := $(shell go list -m github.com/cometbft/cometbft | sed 's:.* ::')
+export VERSION := $(shell echo $(shell git describe --tags --always --match "v*") | sed 's/^v//')
 export COMMIT := $(shell git log -1 --format='%H')
 LEDGER_ENABLED ?= true
 BINDIR ?= $(GOPATH)/bin
@@ -13,9 +12,10 @@ MOCKS_DIR = $(CURDIR)/tests/mocks
 HTTPS_GIT := https://github.com/cosmos/cosmos-sdk.git
 DOCKER := $(shell which docker)
 PROJECT_NAME = $(shell git remote get-url origin | xargs basename -s .git)
-# RocksDB is a native dependency, so we don't assume the library is installed.
-# Instead, it must be explicitly enabled and we warn when it is not.
-ENABLE_ROCKSDB ?= false
+
+ifeq ($(findstring .,$(VERSION)),)
+	VERSION := 0.0.0
+endif
 
 # process build tags
 build_tags = netgo
@@ -50,6 +50,29 @@ ifeq (legacy,$(findstring legacy,$(COSMOS_BUILD_OPTIONS)))
   build_tags += app_v1
 endif
 
+# DB backend selection
+ifeq (cleveldb,$(findstring cleveldb,$(COSMOS_BUILD_OPTIONS)))
+  build_tags += gcc
+endif
+ifeq (badgerdb,$(findstring badgerdb,$(COSMOS_BUILD_OPTIONS)))
+  build_tags += badgerdb
+endif
+# handle rocksdb
+ifeq (rocksdb,$(findstring rocksdb,$(COSMOS_BUILD_OPTIONS)))
+  CGO_ENABLED=1
+  build_tags += rocksdb grocksdb_clean_link
+endif
+# handle boltdb
+ifeq (boltdb,$(findstring boltdb,$(COSMOS_BUILD_OPTIONS)))
+  build_tags += boltdb
+endif
+
+# handle blst
+ifeq (blst,$(findstring blst,$(COSMOS_BUILD_OPTIONS)))
+  CGO_ENABLED=1
+  build_tags += blst
+endif
+
 whitespace :=
 whitespace += $(whitespace)
 comma := ,
@@ -58,36 +81,10 @@ build_tags_comma_sep := $(subst $(whitespace),$(comma),$(build_tags))
 # process linker flags
 
 ldflags = -X github.com/cosmos/cosmos-sdk/version.Name=sim \
-		  -X github.com/cosmos/cosmos-sdk/version.AppName=simd \
-		  -X github.com/cosmos/cosmos-sdk/version.Version=$(VERSION) \
-		  -X github.com/cosmos/cosmos-sdk/version.Commit=$(COMMIT) \
-		  -X "github.com/cosmos/cosmos-sdk/version.BuildTags=$(build_tags_comma_sep)" \
-			-X github.com/cometbft/cometbft/version.TMCoreSemVer=$(CMTVERSION)
-
-ifeq ($(ENABLE_ROCKSDB),true)
-  BUILD_TAGS += rocksdb_build
-  test_tags += rocksdb_build
-endif
-
-# DB backend selection
-ifeq (cleveldb,$(findstring cleveldb,$(COSMOS_BUILD_OPTIONS)))
-  build_tags += gcc
-endif
-ifeq (badgerdb,$(findstring badgerdb,$(COSMOS_BUILD_OPTIONS)))
-  BUILD_TAGS += badgerdb
-endif
-# handle rocksdb
-ifeq (rocksdb,$(findstring rocksdb,$(COSMOS_BUILD_OPTIONS)))
-  ifneq ($(ENABLE_ROCKSDB),true)
-    $(error Cannot use RocksDB backend unless ENABLE_ROCKSDB=true)
-  endif
-  CGO_ENABLED=1
-  BUILD_TAGS += rocksdb
-endif
-# handle boltdb
-ifeq (boltdb,$(findstring boltdb,$(COSMOS_BUILD_OPTIONS)))
-  BUILD_TAGS += boltdb
-endif
+		-X github.com/cosmos/cosmos-sdk/version.AppName=simd \
+		-X github.com/cosmos/cosmos-sdk/version.Version=$(VERSION) \
+		-X github.com/cosmos/cosmos-sdk/version.Commit=$(COMMIT) \
+		-X "github.com/cosmos/cosmos-sdk/version.BuildTags=$(build_tags_comma_sep)"
 
 ifeq (,$(findstring nostrip,$(COSMOS_BUILD_OPTIONS)))
   ldflags += -w -s
@@ -109,10 +106,8 @@ ifeq (debug,$(findstring debug,$(COSMOS_BUILD_OPTIONS)))
   BUILD_FLAGS += -gcflags "all=-N -l"
 endif
 
-all: tools build lint test vulncheck
-
-# The below include contains the tools and runsim targets.
-include contrib/devtools/Makefile
+#? all: Run tools build 
+all: build
 
 ###############################################################################
 ###                                  Build                                  ###
@@ -120,11 +115,14 @@ include contrib/devtools/Makefile
 
 BUILD_TARGETS := build install
 
+#? build: Build simapp
 build: BUILD_ARGS=-o $(BUILDDIR)/
 
+#? build-linux-amd64: Build simapp for GOOS=linux GOARCH=amd64
 build-linux-amd64:
 	GOOS=linux GOARCH=amd64 LEDGER_ENABLED=false $(MAKE) build
 
+#? build-linux-arm64: Build simapp for GOOS=linux GOARCH=arm64
 build-linux-arm64:
 	GOOS=linux GOARCH=arm64 LEDGER_ENABLED=false $(MAKE) build
 
@@ -134,27 +132,27 @@ $(BUILD_TARGETS): go.sum $(BUILDDIR)/
 $(BUILDDIR)/:
 	mkdir -p $(BUILDDIR)/
 
+#? cosmovisor: Build cosmovisor
 cosmovisor:
 	$(MAKE) -C tools/cosmovisor cosmovisor
 
-rosetta:
-	$(MAKE) -C tools/rosetta rosetta
-
+#? confix: Build confix
 confix:
 	$(MAKE) -C tools/confix confix
 
+#? hubl: Build hubl
 hubl:
 	$(MAKE) -C tools/hubl hubl
 
-.PHONY: build build-linux-amd64 build-linux-arm64 cosmovisor rosetta confix
+.PHONY: build build-linux-amd64 build-linux-arm64 cosmovisor confix
 
-
+#? mocks: Generate mock file
 mocks: $(MOCKS_DIR)
 	@go install github.com/golang/mock/mockgen@v1.6.0
 	sh ./scripts/mockgen.sh
 .PHONY: mocks
 
-
+#? vulncheck: Run govulncheck
 vulncheck: $(BUILDDIR)/
 	GOBIN=$(BUILDDIR) go install golang.org/x/vuln/cmd/govulncheck@latest
 	$(BUILDDIR)/govulncheck ./...
@@ -162,7 +160,10 @@ vulncheck: $(BUILDDIR)/
 $(MOCKS_DIR):
 	mkdir -p $(MOCKS_DIR)
 
-distclean: clean tools-clean
+#? distclean: Run `make clean` and `make tools-clean`
+distclean: clean
+
+#? clean: Clean some auto generated directory
 clean:
 	rm -rf \
 	$(BUILDDIR)/ \
@@ -185,39 +186,47 @@ go.sum: go.mod
 ###                              Documentation                              ###
 ###############################################################################
 
-update-swagger-docs: statik
-	$(BINDIR)/statik -src=client/docs/swagger-ui -dest=client/docs -f -m
-	@if [ -n "$(git status --porcelain)" ]; then \
-		echo "\033[91mSwagger docs are out of sync!!!\033[0m";\
-		exit 1;\
-	else \
-		echo "\033[92mSwagger docs are in sync\033[0m";\
-	fi
-.PHONY: update-swagger-docs
-
+#? godocs: Generate go doc
 godocs:
 	@echo "--> Wait a few seconds and visit http://localhost:6060/pkg/github.com/cosmos/cosmos-sdk/types"
+	go install golang.org/x/tools/cmd/godoc@latest
 	godoc -http=:6060
-
-build-docs:
-	@cd docs && DOCS_DOMAIN=docs.cosmos.network sh ./build-all.sh
-
-.PHONY: build-docs
 
 ###############################################################################
 ###                           Tests & Simulation                            ###
 ###############################################################################
 
+# make init-simapp initializes a single local node network
+# it is useful for testing and development
+# Usage: make install && make init-simapp && simd start
+# Warning: make init-simapp will remove all data in simapp home directory
+#? init-simapp: Initializes a single local node network
+init-simapp:
+	./scripts/init-simapp.sh
+
+#? test: Run `make test-unit`
 test: test-unit
+#? test-e2e: Run `make -C tests test-e2e`
 test-e2e:
 	$(MAKE) -C tests test-e2e
+#? test-e2e-cov: Run `make -C tests test-e2e-cov`
 test-e2e-cov:
 	$(MAKE) -C tests test-e2e-cov
+#? test-integration: Run `make -C tests test-integration`
 test-integration:
 	$(MAKE) -C tests test-integration
+#? test-integration-cov: Run `make -C tests test-integration-cov`
 test-integration-cov:
 	$(MAKE) -C tests test-integration-cov
+#? test-all: Run all test
 test-all: test-unit test-e2e test-integration test-ledger-mock test-race
+
+.PHONY: test-system
+test-system: build
+	mkdir -p ./tests/systemtests/binaries/
+	cp $(BUILDDIR)/simd ./tests/systemtests/binaries/
+	$(MAKE) -C tests/systemtests test
+
 
 TEST_PACKAGES=./...
 TEST_TARGETS := test-unit test-unit-amino test-unit-proto test-ledger-mock test-race test-ledger test-race
@@ -226,7 +235,6 @@ TEST_TARGETS := test-unit test-unit-amino test-unit-proto test-ledger-mock test-
 # a new rule, customise ARGS or TEST_PACKAGES ad libitum, and
 # append the new rule to the TEST_TARGETS list.
 test-unit: test_tags += cgo ledger test_ledger_mock norace
-test-unit-amino: test_tags += ledger test_ledger_mock test_amino norace
 test-ledger: test_tags += cgo ledger norace
 test-ledger-mock: test_tags += ledger test_ledger_mock norace
 test-race: test_tags += cgo ledger test_ledger_mock
@@ -238,20 +246,20 @@ $(TEST_TARGETS): run-tests
 # note: go test -c doesn't support multiple packages yet (https://github.com/golang/go/issues/15513)
 CHECK_TEST_TARGETS := check-test-unit check-test-unit-amino
 check-test-unit: test_tags += cgo ledger test_ledger_mock norace
-check-test-unit-amino: test_tags += ledger test_ledger_mock test_amino norace
 $(CHECK_TEST_TARGETS): EXTRA_ARGS=-run=none
 $(CHECK_TEST_TARGETS): run-tests
 
 ARGS += -tags "$(test_tags)"
 SUB_MODULES = $(shell find . -type f -name 'go.mod' -print0 | xargs -0 -n1 dirname | sort)
 CURRENT_DIR = $(shell pwd)
+#? run-tests: Run every sub modules' tests
 run-tests:
 ifneq (,$(shell which tparse 2>/dev/null))
 	@echo "Starting unit tests"; \
 	finalec=0; \
 	for module in $(SUB_MODULES); do \
 		cd ${CURRENT_DIR}/$$module; \
-		echo "Running unit tests for module $$module"; \
+		echo "Running unit tests for $$(grep '^module' go.mod)"; \
 		go test -mod=readonly -json $(ARGS) $(TEST_PACKAGES) ./... | tparse; \
 		ec=$$?; \
 		if [ "$$ec" -ne '0' ]; then finalec=$$ec; fi; \
@@ -262,7 +270,7 @@ else
 	finalec=0; \
 	for module in $(SUB_MODULES); do \
 		cd ${CURRENT_DIR}/$$module; \
-		echo "Running unit tests for module $$module"; \
+		echo "Running unit tests for $$(grep '^module' go.mod)"; \
 		go test -mod=readonly $(ARGS) $(TEST_PACKAGES) ./... ; \
 		ec=$$?; \
 		if [ "$$ec" -ne '0' ]; then finalec=$$ec; fi; \
@@ -272,46 +280,68 @@ endif
 
 .PHONY: run-tests test test-all $(TEST_TARGETS)
 
+#? test-sim-nondeterminism: Run non-determinism test for simapp
 test-sim-nondeterminism:
 	@echo "Running non-determinism test..."
-	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -run TestAppStateDeterminism -Enabled=true \
-		-NumBlocks=100 -BlockSize=200 -Commit=true -Period=0 -v -timeout 24h
+	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -timeout=30m -tags='sims' -run TestAppStateDeterminism \
+		-NumBlocks=100 -BlockSize=200 -Period=0
+
+# Requires an exported plugin. See store/streaming/README.md for documentation.
+#
+# example:
+#   export COSMOS_SDK_ABCI_V1=<path-to-plugin-binary>
+#   make test-sim-nondeterminism-streaming
+#
+# Using the built-in examples:
+#   export COSMOS_SDK_ABCI_V1=<path-to-sdk>/store/streaming/abci/examples/file/file
+#   make test-sim-nondeterminism-streaming
+test-sim-nondeterminism-streaming:
+	@echo "Running non-determinism-streaming test..."
+	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -timeout=30m -tags='sims' -run TestAppStateDeterminism \
+		-NumBlocks=100 -BlockSize=200 -Period=0 -EnableStreaming=true
 
 test-sim-custom-genesis-fast:
 	@echo "Running custom genesis simulation..."
-	@echo "By default, ${HOME}/.gaiad/config/genesis.json will be used."
-	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -run TestFullAppSimulation -Genesis=${HOME}/.gaiad/config/genesis.json \
-		-Enabled=true -NumBlocks=100 -BlockSize=200 -Commit=true -Seed=99 -Period=5 -v -timeout 24h
+	@echo "By default, ${HOME}/.simapp/config/genesis.json will be used."
+	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -timeout=30m -tags='sims' -run TestFullAppSimulation -Genesis=${HOME}/.simapp/config/genesis.json \
+		-NumBlocks=100 -BlockSize=200 -Seed=99 -Period=5 -SigverifyTx=false
 
-test-sim-import-export: runsim
+test-sim-import-export:
 	@echo "Running application import/export simulation. This may take several minutes..."
-	@cd ${CURRENT_DIR}/simapp && $(BINDIR)/runsim -Jobs=4 -SimAppPkg=. -ExitOnFail 50 5 TestAppImportExport
+	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -timeout 20m -tags='sims' -run TestAppImportExport \
+		-NumBlocks=50 -Period=5
 
-test-sim-after-import: runsim
+test-sim-after-import:
 	@echo "Running application simulation-after-import. This may take several minutes..."
-	@cd ${CURRENT_DIR}/simapp && $(BINDIR)/runsim -Jobs=4 -SimAppPkg=. -ExitOnFail 50 5 TestAppSimulationAfterImport
+	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -timeout 30m -tags='sims' -run TestAppSimulationAfterImport \
+		-NumBlocks=50 -Period=5
 
-test-sim-custom-genesis-multi-seed: runsim
+
+test-sim-custom-genesis-multi-seed:
 	@echo "Running multi-seed custom genesis simulation..."
-	@echo "By default, ${HOME}/.gaiad/config/genesis.json will be used."
-	@cd ${CURRENT_DIR}/simapp && $(BINDIR)/runsim -Genesis=${HOME}/.gaiad/config/genesis.json -SimAppPkg=. -ExitOnFail 400 5 TestFullAppSimulation
+	@echo "By default, ${HOME}/.simapp/config/genesis.json will be used."
+	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -timeout 30m -tags='sims' -run TestFullAppSimulation -Genesis=${HOME}/.simapp/config/genesis.json \
+		-NumBlocks=400 -Period=5
 
-test-sim-multi-seed-long: runsim
+test-sim-multi-seed-long:
 	@echo "Running long multi-seed application simulation. This may take awhile!"
-	@cd ${CURRENT_DIR}/simapp && $(BINDIR)/runsim -Jobs=4 -SimAppPkg=. -ExitOnFail 500 50 TestFullAppSimulation
+	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -timeout=1h -tags='sims' -run TestFullAppSimulation \
+		-NumBlocks=500 -Period=50
 
-test-sim-multi-seed-short: runsim
+test-sim-multi-seed-short:
 	@echo "Running short multi-seed application simulation. This may take awhile!"
-	@cd ${CURRENT_DIR}/simapp && $(BINDIR)/runsim -Jobs=4 -SimAppPkg=. -ExitOnFail 50 10 TestFullAppSimulation
+	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -timeout 30m -tags='sims' -run TestFullAppSimulation \
+		-NumBlocks=50 -Period=10
 
 test-sim-benchmark-invariants:
 	@echo "Running simulation invariant benchmarks..."
-	cd ${CURRENT_DIR}/simapp && @go test -mod=readonly -benchmem -bench=BenchmarkInvariants -run=^$ \
+	cd ${CURRENT_DIR}/simapp && go test -mod=readonly -benchmem -bench=BenchmarkInvariants -tags='sims' -run=^$ \
 	-Enabled=true -NumBlocks=1000 -BlockSize=200 \
 	-Period=1 -Commit=true -Seed=57 -v -timeout 24h
 
 .PHONY: \
 test-sim-nondeterminism \
+test-sim-nondeterminism-streaming \
 test-sim-custom-genesis-fast \
 test-sim-import-export \
 test-sim-after-import \
@@ -324,23 +354,54 @@ SIM_NUM_BLOCKS ?= 500
 SIM_BLOCK_SIZE ?= 200
 SIM_COMMIT ?= true
 
+#? test-sim-fuzz: Run fuzz test for simapp
+test-sim-fuzz:
+	@echo "Running application fuzz for numBlocks=2, blockSize=20. This may take awhile!"
+#ld flags are a quick fix to make it work on current osx
+	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -json -tags='sims' -ldflags="-extldflags=-Wl,-ld_classic" -timeout=60m -fuzztime=60m -run=^$$ -fuzz=FuzzFullAppSimulation -GenesisTime=1714720615 -NumBlocks=2 -BlockSize=20
+
+#? test-sim-benchmark: Run benchmark test for simapp
 test-sim-benchmark:
 	@echo "Running application benchmark for numBlocks=$(SIM_NUM_BLOCKS), blockSize=$(SIM_BLOCK_SIZE). This may take awhile!"
-	@go test -mod=readonly -benchmem -run=^$$ $(SIMAPP) -bench ^BenchmarkFullAppSimulation$$  \
+	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -run=^$$ $(.) -bench ^BenchmarkFullAppSimulation$$  \
 		-Enabled=true -NumBlocks=$(SIM_NUM_BLOCKS) -BlockSize=$(SIM_BLOCK_SIZE) -Commit=$(SIM_COMMIT) -timeout 24h
+
+# Requires an exported plugin. See store/streaming/README.md for documentation.
+#
+# example:
+#   export COSMOS_SDK_ABCI_V1=<path-to-plugin-binary>
+#   make test-sim-benchmark-streaming
+#
+# Using the built-in examples:
+#   export COSMOS_SDK_ABCI_V1=<path-to-sdk>/store/streaming/abci/examples/file/file
+#   make test-sim-benchmark-streaming
+test-sim-benchmark-streaming:
+	@echo "Running application benchmark for numBlocks=$(SIM_NUM_BLOCKS), blockSize=$(SIM_BLOCK_SIZE). This may take awhile!"
+	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -run=^$$ $(.) -bench ^BenchmarkFullAppSimulation$$  \
+		-Enabled=true -NumBlocks=$(SIM_NUM_BLOCKS) -BlockSize=$(SIM_BLOCK_SIZE) -Commit=$(SIM_COMMIT) -timeout 24h -EnableStreaming=true
 
 test-sim-profile:
 	@echo "Running application benchmark for numBlocks=$(SIM_NUM_BLOCKS), blockSize=$(SIM_BLOCK_SIZE). This may take awhile!"
-	@go test -mod=readonly -benchmem -run=^$$ $(SIMAPP) -bench ^BenchmarkFullAppSimulation$$ \
+	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -benchmem -run=^$$ $(.) -bench ^BenchmarkFullAppSimulation$$ \
 		-Enabled=true -NumBlocks=$(SIM_NUM_BLOCKS) -BlockSize=$(SIM_BLOCK_SIZE) -Commit=$(SIM_COMMIT) -timeout 24h -cpuprofile cpu.out -memprofile mem.out
 
-.PHONY: test-sim-profile test-sim-benchmark
+# Requires an exported plugin. See store/streaming/README.md for documentation.
+#
+# example:
+#   export COSMOS_SDK_ABCI_V1=<path-to-plugin-binary>
+#   make test-sim-profile-streaming
+#
+# Using the built-in examples:
+#   export COSMOS_SDK_ABCI_V1=<path-to-sdk>/store/streaming/abci/examples/file/file
+#   make test-sim-profile-streaming
+test-sim-profile-streaming:
+	@echo "Running application benchmark for numBlocks=$(SIM_NUM_BLOCKS), blockSize=$(SIM_BLOCK_SIZE). This may take awhile!"
+	@cd ${CURRENT_DIR}/simapp && go test -mod=readonly -benchmem -run=^$$ $(.) -bench ^BenchmarkFullAppSimulation$$ \
+		-Enabled=true -NumBlocks=$(SIM_NUM_BLOCKS) -BlockSize=$(SIM_BLOCK_SIZE) -Commit=$(SIM_COMMIT) -timeout 24h -cpuprofile cpu.out -memprofile mem.out -EnableStreaming=true
 
-test-rosetta:
-	docker build -t rosetta-ci:latest -f contrib/rosetta/rosetta-ci/Dockerfile .
-	docker-compose -f contrib/rosetta/docker-compose.yaml up --abort-on-container-exit --exit-code-from test_rosetta --build
-.PHONY: test-rosetta
+.PHONY: test-sim-profile test-sim-benchmark test-sim-fuzz
 
+#? benchmark: Run benchmark tests
 benchmark:
 	@go test -mod=readonly -bench=. $(PACKAGES_NOSIMULATION)
 .PHONY: benchmark
@@ -349,90 +410,69 @@ benchmark:
 ###                                Linting                                  ###
 ###############################################################################
 
-golangci_lint_cmd=golangci-lint
-golangci_version=v1.51.1
+golangci_version=v1.59.0
 
+#? setup-pre-commit: Set pre-commit git hook
+setup-pre-commit:
+	@cp .git/hooks/pre-commit .git/hooks/pre-commit.bak 2>/dev/null || true
+	@echo "Installing pre-commit hook..."
+	@ln -sf ../../scripts/hooks/pre-commit.sh .git/hooks/pre-commit
+	@echo "Pre-commit hook installed successfully"
+
+#? lint-install: Install golangci-lint
+lint-install:
+	@echo "--> Installing golangci-lint $(golangci_version)"
+	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(golangci_version)
+
+#? lint: Run golangci-lint
 lint:
 	@echo "--> Running linter"
-	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(golangci_version)
-	@$(golangci_lint_cmd) run --timeout=10m
+	$(MAKE) lint-install
+	@./scripts/go-lint-all.bash --timeout=15m
 
+#? lint: Run golangci-lint and fix
 lint-fix:
 	@echo "--> Running linter"
-	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(golangci_version)
-	@$(golangci_lint_cmd) run --fix --out-format=tab --issues-exit-code=0
+	$(MAKE) lint-install
+	@./scripts/go-lint-all.bash --fix
 
 .PHONY: lint lint-fix
-
-format:
-	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(golangci_version)
-	$(golangci_lint_cmd) run --fix
-.PHONY: format
 
 ###############################################################################
 ###                                Protobuf                                 ###
 ###############################################################################
 
-protoVer=0.12.0
+protoVer=0.14.0
 protoImageName=ghcr.io/cosmos/proto-builder:$(protoVer)
 protoImage=$(DOCKER) run --rm -v $(CURDIR):/workspace --workdir /workspace $(protoImageName)
 
+#? proto-all: Run make proto-format proto-lint proto-gen
 proto-all: proto-format proto-lint proto-gen
 
+#? proto-gen: Generate Protobuf files
 proto-gen:
-	@echo "Generating Protobuf files"
 	@$(protoImage) sh ./scripts/protocgen.sh
 
+#? proto-swagger-gen: Generate Protobuf Swagger
 proto-swagger-gen:
 	@echo "Generating Protobuf Swagger"
 	@$(protoImage) sh ./scripts/protoc-swagger-gen.sh
-	$(MAKE) update-swagger-docs
 
+#? proto-format: Format proto file
 proto-format:
 	@$(protoImage) find ./ -name "*.proto" -exec clang-format -i {} \;
 
+#? proto-lint: Lint proto file
 proto-lint:
 	@$(protoImage) buf lint --error-format=json
 
+#? proto-check-breaking: Check proto file is breaking
 proto-check-breaking:
 	@$(protoImage) buf breaking --against $(HTTPS_GIT)#branch=main
 
-# TODO update/remove after v0.37.x tag of CometBFT
-CMT_URL              = https://raw.githubusercontent.com/cometbft/cometbft/v0.37.0-alpha.3/proto/tendermint
-
-CMT_CRYPTO_TYPES     = proto/tendermint/crypto
-CMT_ABCI_TYPES       = proto/tendermint/abci
-CMT_TYPES            = proto/tendermint/types
-CMT_VERSION          = proto/tendermint/version
-CMT_LIBS             = proto/tendermint/libs/bits
-CMT_P2P              = proto/tendermint/p2p
-
+#? proto-update-deps: Update protobuf dependencies
 proto-update-deps:
 	@echo "Updating Protobuf dependencies"
-
-	@mkdir -p $(CMT_ABCI_TYPES)
-	@curl -sSL $(CMT_URL)/abci/types.proto > $(CMT_ABCI_TYPES)/types.proto
-
-	@mkdir -p $(CMT_VERSION)
-	@curl -sSL $(CMT_URL)/version/types.proto > $(CMT_VERSION)/types.proto
-
-	@mkdir -p $(CMT_TYPES)
-	@curl -sSL $(CMT_URL)/types/types.proto > $(CMT_TYPES)/types.proto
-	@curl -sSL $(CMT_URL)/types/evidence.proto > $(CMT_TYPES)/evidence.proto
-	@curl -sSL $(CMT_URL)/types/params.proto > $(CMT_TYPES)/params.proto
-	@curl -sSL $(CMT_URL)/types/validator.proto > $(CMT_TYPES)/validator.proto
-	@curl -sSL $(CMT_URL)/types/block.proto > $(CMT_TYPES)/block.proto
-
-	@mkdir -p $(CMT_CRYPTO_TYPES)
-	@curl -sSL $(CMT_URL)/crypto/proof.proto > $(CMT_CRYPTO_TYPES)/proof.proto
-	@curl -sSL $(CMT_URL)/crypto/keys.proto > $(CMT_CRYPTO_TYPES)/keys.proto
-
-	@mkdir -p $(CMT_LIBS)
-	@curl -sSL $(CMT_URL)/libs/bits/types.proto > $(CMT_LIBS)/types.proto
-
-	@mkdir -p $(CMT_P2P)
-	@curl -sSL $(CMT_URL)/p2p/types.proto > $(CMT_P2P)/types.proto
-
 	$(DOCKER) run --rm -v $(CURDIR)/proto:/workspace --workdir /workspace $(protoImageName) buf mod update
 
 .PHONY: proto-all proto-gen proto-swagger-gen proto-format proto-lint proto-check-breaking proto-update-deps
@@ -441,37 +481,36 @@ proto-update-deps:
 ###                                Localnet                                 ###
 ###############################################################################
 
+#? localnet-build-env: Run `make -C contrib/images simd-env`
 localnet-build-env:
 	$(MAKE) -C contrib/images simd-env
+#? localnet-build-dlv: Run `make -C contrib/images simd-dlv`
 localnet-build-dlv:
 	$(MAKE) -C contrib/images simd-dlv
-
+#? localnet-build-nodes: Start localnet node
 localnet-build-nodes:
 	$(DOCKER) run --rm -v $(CURDIR)/.testnets:/data cosmossdk/simd \
-			  testnet init-files --v 4 -o /data --starting-ip-address 192.168.10.2 --keyring-backend=test
+			  testnet init-files -n 4 -o /data --starting-ip-address 192.168.10.2 --keyring-backend=test --listen-ip-address 0.0.0.0
 	docker-compose up -d
 
+#? localnet-stop: Stop localnet node
 localnet-stop:
 	docker-compose down
 
 # localnet-start will run a 4-node testnet locally. The nodes are
 # based off the docker images in: ./contrib/images/simd-env
+#? localnet-start: Run a 4-node testnet locally
 localnet-start: localnet-stop localnet-build-env localnet-build-nodes
 
 # localnet-debug will run a 4-node testnet locally in debug mode
 # you can read more about the debug mode here: ./contrib/images/simd-dlv/README.md
+#? localnet-debug: Run a 4-node testnet locally in debug mode
 localnet-debug: localnet-stop localnet-build-dlv localnet-build-nodes
 
 .PHONY: localnet-start localnet-stop localnet-debug localnet-build-env localnet-build-dlv localnet-build-nodes
 
-###############################################################################
-###                                rosetta                                  ###
-###############################################################################
-# builds rosetta test data dir
-rosetta-data:
-	-docker container rm data_dir_build
-	docker build -t rosetta-ci:latest -f contrib/rosetta/rosetta-ci/Dockerfile .
-	docker run --name data_dir_build -t rosetta-ci:latest sh /rosetta/data.sh
-	docker cp data_dir_build:/tmp/data.tar.gz "$(CURDIR)/contrib/rosetta/rosetta-ci/data.tar.gz"
-	docker container rm data_dir_build
-.PHONY: rosetta-data
+#? help: Get more info on make commands.
+help: Makefile
+	@echo " Choose a command run in "$(PROJECT_NAME)":"
+	@sed -n 's/^#?//p' $< | column -t -s ':' |  sort | sed -e 's/^/ /'
+.PHONY: help

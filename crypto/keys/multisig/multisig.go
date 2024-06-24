@@ -1,7 +1,7 @@
 package multisig
 
 import (
-	fmt "fmt"
+	"fmt"
 
 	cmtcrypto "github.com/cometbft/cometbft/crypto"
 
@@ -100,7 +100,7 @@ func (m *LegacyAminoPubKey) VerifyMultisignature(getSignBytes multisigtypes.GetS
 // VerifySignature implements cryptotypes.PubKey VerifySignature method,
 // it panics because it can't handle MultiSignatureData
 // cf. https://github.com/cosmos/cosmos-sdk/issues/7109#issuecomment-686329936
-func (m *LegacyAminoPubKey) VerifySignature(msg []byte, sig []byte) bool {
+func (m *LegacyAminoPubKey) VerifySignature(msg, sig []byte) bool {
 	panic("not implemented")
 }
 
@@ -169,6 +169,11 @@ func packPubKeys(pubKeys []cryptotypes.PubKey) ([]*types.Any, error) {
 			return nil, err
 		}
 		anyPubKeys[i] = any
+
+		// sets the compat.aminoBz value
+		if err := anyPubKeys[i].UnmarshalAmino(pubKeys[i].Bytes()); err != nil {
+			return nil, err
+		}
 	}
 	return anyPubKeys, nil
 }

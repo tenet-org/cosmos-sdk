@@ -3,8 +3,9 @@ package types
 import (
 	"fmt"
 
+	"github.com/cosmos/gogoproto/proto"
+
 	"cosmossdk.io/x/evidence/exported"
-	proto "github.com/cosmos/gogoproto/proto"
 
 	"github.com/cosmos/cosmos-sdk/codec/types"
 )

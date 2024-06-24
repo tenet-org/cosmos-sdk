@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/suite"
+
+	"cosmossdk.io/math"
 )
 
 func TestCoinTestSuite(t *testing.T) {
@@ -15,7 +17,7 @@ type coinInternalSuite struct {
 }
 
 func (s *coinInternalSuite) TestIsSorted() {
-	v := NewInt(1)
+	v := math.NewInt(1)
 	cases := []struct {
 		coins    Coins
 		expected bool
@@ -32,6 +34,6 @@ func (s *coinInternalSuite) TestIsSorted() {
 	}
 	assert := s.Assert()
 	for i, tc := range cases {
-		assert.Equal(tc.expected, tc.coins.isSorted(), "testcase %d failed", i)
+		assert.Equal(tc.expected, tc.coins.IsSorted(), "testcase %d failed", i)
 	}
 }

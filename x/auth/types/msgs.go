@@ -1,37 +1,21 @@
 package types
 
 import (
-	"cosmossdk.io/errors"
+	coretransaction "cosmossdk.io/core/transaction"
 
-	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/x/auth/migrations/legacytx"
+	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
 )
 
-var (
-	_ sdk.Msg            = &MsgUpdateParams{}
-	_ legacytx.LegacyMsg = &MsgUpdateParams{}
-)
-
-// GetSignBytes implements the LegacyMsg interface.
-func (msg MsgUpdateParams) GetSignBytes() []byte {
-	return sdk.MustSortJSON(ModuleCdc.MustMarshalJSON(&msg))
-}
-
-// GetSigners returns the expected signers for a MsgUpdateParams message.
-func (msg MsgUpdateParams) GetSigners() []sdk.AccAddress {
-	addr, _ := sdk.AccAddressFromBech32(msg.Authority)
-	return []sdk.AccAddress{addr}
-}
-
-// ValidateBasic does a sanity check on the provided data.
-func (msg MsgUpdateParams) ValidateBasic() error {
-	if _, err := sdk.AccAddressFromBech32(msg.Authority); err != nil {
-		return errors.Wrap(err, "invalid authority address")
+// GetMessages returns the cache values from the MsgNonAtomicExec.Msgs if present.
+func (msg MsgNonAtomicExec) GetMessages() ([]coretransaction.Msg, error) {
+	msgs := make([]coretransaction.Msg, len(msg.Msgs))
+	for i, msgAny := range msg.Msgs {
+		msg, ok := msgAny.GetCachedValue().(coretransaction.Msg)
+		if !ok {
+			return nil, sdkerrors.ErrInvalidRequest.Wrapf("messages contains %T which is not a sdk.Msg", msgAny)
+		}
+		msgs[i] = msg
 	}
 
-	if err := msg.Params.Validate(); err != nil {
-		return err
-	}
-
-	return nil
+	return msgs, nil
 }

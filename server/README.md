@@ -1,7 +1,7 @@
 # Server
 
 The `server` package is responsible for providing the mechanisms necessary to
-start an ABCI Tendermint application and provides the CLI framework (based on [cobra](https://github.com/spf13/cobra))
+start an ABCI CometBFT application and provides the CLI framework (based on [cobra](https://github.com/spf13/cobra))
 necessary to fully bootstrap an application. The package exposes two core functions: `StartCmd`
 and `ExportCmd` which creates commands to start the application and export state respectively.
 
@@ -15,7 +15,7 @@ utilities.
 
 It is vital that the root command of an application uses `PersistentPreRun()` cobra command
 property for executing the command, so all child commands have access to the server and client contexts.
-These contexts are set as their default values initially and maybe modified,
+These contexts are set as their default values initially and may be modified,
 scoped to the command, in their respective `PersistentPreRun()` functions. Note that
 the `client.Context` is typically pre-populated with "default" values that may be
 useful for all commands to inherit and override if necessary.
@@ -47,7 +47,7 @@ which creates a `client.Context` and sets that on the root command's `Context`.
 The `InterceptConfigsPreRunHandler` call creates a viper literal, default `server.Context`,
 and a logger and sets that on the root command's `Context`. The `server.Context`
 will be modified and saved to disk via the internal `interceptConfigs` call, which
-either reads or creates a Tendermint configuration based on the home path provided.
+either reads or creates a CometBFT configuration based on the home path provided.
 In addition, `interceptConfigs` also reads and loads the application configuration,
 `app.toml`, and binds that to the `server.Context` viper literal. This is vital
 so the application can get access to not only the CLI flags, but also to the
@@ -64,36 +64,22 @@ may use and provide to the construction process are defined by the `StartCmd`
 and by the application's config file, `app.toml`.
 
 The application can either be started in-process or as an external process. The
-former creates a Tendermint service and the latter creates a Tendermint Node.
+former creates a CometBFT service and the latter creates a CometBFT Node.
 
 Under the hood, `StartCmd` will call `GetServerContextFromCmd`, which provides
 the command access to a `server.Context`. This context provides access to the
-viper literal, the Tendermint config and logger. This allows flags to be bound
+viper literal, the CometBFT config and logger. This allows flags to be bound
 the viper literal and passed to the application construction.
 
 Example:
 
 ```go
-func newApp(logger log.Logger, db dbm.DB, traceStore io.Writer, appOpts server.AppOptions) server.Application {
-	var cache sdk.MultiStorePersistentCache
-
-	if cast.ToBool(appOpts.Get(server.FlagInterBlockCache)) {
-		cache = store.NewCommitKVStoreCacheManager()
-	}
-
-	pruningOpts, err := server.GetPruningOptionsFromFlags(appOpts)
-	if err != nil {
-		panic(err)
-	}
-
+func newApp(logger log.Logger, db dbm.DB, traceStore io.Writer, appOpts servertypes.AppOptions) servertypes.Application {
+	baseappOptions := server.DefaultBaseappOptions(appOpts)
 	return simapp.NewSimApp(
 		logger, db, traceStore, true,
-		baseapp.SetPruning(pruningOpts),
-		baseapp.SetMinGasPrices(cast.ToString(appOpts.Get(server.FlagMinGasPrices))),
-		baseapp.SetHaltHeight(cast.ToUint64(appOpts.Get(server.FlagHaltHeight))),
-		baseapp.SetHaltTime(cast.ToUint64(appOpts.Get(server.FlagHaltTime))),
-		baseapp.SetInterBlockCache(cache),
-		baseapp.SetTrace(cast.ToBool(appOpts.Get(server.FlagTrace))),
+		appOpts,
+		baseappOptions...,
 	)
 }
 ```

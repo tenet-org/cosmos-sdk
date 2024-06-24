@@ -1,23 +1,30 @@
 package keeper_test
 
 import (
+	"context"
 	"testing"
 
+	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
-
+	"cosmossdk.io/core/header"
+	"cosmossdk.io/core/log"
 	storetypes "cosmossdk.io/store/types"
+	"cosmossdk.io/x/auth"
+	authcodec "cosmossdk.io/x/auth/codec"
+	"cosmossdk.io/x/auth/keeper"
+	authtestutil "cosmossdk.io/x/auth/testutil"
+	"cosmossdk.io/x/auth/types"
 
 	"github.com/cosmos/cosmos-sdk/baseapp"
+	codectestutil "github.com/cosmos/cosmos-sdk/codec/testutil"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	"github.com/cosmos/cosmos-sdk/crypto/keys/ed25519"
+	"github.com/cosmos/cosmos-sdk/runtime"
 	"github.com/cosmos/cosmos-sdk/testutil"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	moduletestutil "github.com/cosmos/cosmos-sdk/types/module/testutil"
-	"github.com/cosmos/cosmos-sdk/x/auth"
-	"github.com/cosmos/cosmos-sdk/x/auth/keeper"
-	"github.com/cosmos/cosmos-sdk/x/auth/types"
 )
 
 const (
@@ -36,18 +43,32 @@ type KeeperTestSuite struct {
 
 	ctx sdk.Context
 
-	queryClient   types.QueryClient
-	accountKeeper keeper.AccountKeeper
-	msgServer     types.MsgServer
-	encCfg        moduletestutil.TestEncodingConfig
+	queryClient    types.QueryClient
+	accountKeeper  keeper.AccountKeeper
+	acctsModKeeper *authtestutil.MockAccountsModKeeper
+	msgServer      types.MsgServer
+	encCfg         moduletestutil.TestEncodingConfig
 }
 
 func (suite *KeeperTestSuite) SetupTest() {
-	suite.encCfg = moduletestutil.MakeTestEncodingConfig(auth.AppModuleBasic{})
+	suite.encCfg = moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, auth.AppModule{})
 
 	key := storetypes.NewKVStoreKey(types.StoreKey)
+	storeService := runtime.NewKVStoreService(key)
+	env := runtime.NewEnvironment(storeService, log.NewNopLogger())
 	testCtx := testutil.DefaultContextWithDB(suite.T(), key, storetypes.NewTransientStoreKey("transient_test"))
-	suite.ctx = testCtx.Ctx.WithBlockHeader(cmtproto.Header{})
+	suite.ctx = testCtx.Ctx.WithHeaderInfo(header.Info{})
+
+	// gomock initializations
+	ctrl := gomock.NewController(suite.T())
+	acctsModKeeper := authtestutil.NewMockAccountsModKeeper(ctrl)
+	suite.acctsModKeeper = acctsModKeeper
+	accNum := uint64(0)
+	suite.acctsModKeeper.EXPECT().NextAccountNumber(gomock.Any()).AnyTimes().DoAndReturn(func(ctx context.Context) (uint64, error) {
+		currNum := accNum
+		accNum++
+		return currNum, nil
+	})
 
 	maccPerms := map[string][]string{
 		"fee_collector":          nil,
@@ -59,95 +80,23 @@ func (suite *KeeperTestSuite) SetupTest() {
 	}
 
 	suite.accountKeeper = keeper.NewAccountKeeper(
+		env,
 		suite.encCfg.Codec,
-		key,
 		types.ProtoBaseAccount,
+		acctsModKeeper,
 		maccPerms,
+		authcodec.NewBech32Codec("cosmos"),
 		"cosmos",
 		types.NewModuleAddress("gov").String(),
 	)
 	suite.msgServer = keeper.NewMsgServerImpl(suite.accountKeeper)
 	queryHelper := baseapp.NewQueryServerTestHelper(suite.ctx, suite.encCfg.InterfaceRegistry)
-	types.RegisterQueryServer(queryHelper, suite.accountKeeper)
+	types.RegisterQueryServer(queryHelper, keeper.NewQueryServer(suite.accountKeeper))
 	suite.queryClient = types.NewQueryClient(queryHelper)
 }
 
 func TestKeeperTestSuite(t *testing.T) {
 	suite.Run(t, new(KeeperTestSuite))
-}
-
-func (suite *KeeperTestSuite) TestAccountMapperGetSet() {
-	ctx := suite.ctx
-	addr := sdk.AccAddress([]byte("some---------address"))
-
-	// no account before its created
-	acc := suite.accountKeeper.GetAccount(ctx, addr)
-	suite.Require().Nil(acc)
-
-	// create account and check default values
-	acc = suite.accountKeeper.NewAccountWithAddress(ctx, addr)
-	suite.Require().NotNil(acc)
-	suite.Require().Equal(addr, acc.GetAddress())
-	suite.Require().EqualValues(nil, acc.GetPubKey())
-	suite.Require().EqualValues(0, acc.GetSequence())
-
-	// NewAccount doesn't call Set, so it's still nil
-	suite.Require().Nil(suite.accountKeeper.GetAccount(ctx, addr))
-
-	// set some values on the account and save it
-	newSequence := uint64(20)
-	err := acc.SetSequence(newSequence)
-	suite.Require().NoError(err)
-	suite.accountKeeper.SetAccount(ctx, acc)
-
-	// check the new values
-	acc = suite.accountKeeper.GetAccount(ctx, addr)
-	suite.Require().NotNil(acc)
-	suite.Require().Equal(newSequence, acc.GetSequence())
-}
-
-func (suite *KeeperTestSuite) TestAccountMapperRemoveAccount() {
-	ctx := suite.ctx
-	addr1 := sdk.AccAddress([]byte("addr1---------------"))
-	addr2 := sdk.AccAddress([]byte("addr2---------------"))
-
-	// create accounts
-	acc1 := suite.accountKeeper.NewAccountWithAddress(ctx, addr1)
-	acc2 := suite.accountKeeper.NewAccountWithAddress(ctx, addr2)
-
-	accSeq1 := uint64(20)
-	accSeq2 := uint64(40)
-
-	err := acc1.SetSequence(accSeq1)
-	suite.Require().NoError(err)
-	err = acc2.SetSequence(accSeq2)
-	suite.Require().NoError(err)
-	suite.accountKeeper.SetAccount(ctx, acc1)
-	suite.accountKeeper.SetAccount(ctx, acc2)
-
-	acc1 = suite.accountKeeper.GetAccount(ctx, addr1)
-	suite.Require().NotNil(acc1)
-	suite.Require().Equal(accSeq1, acc1.GetSequence())
-
-	// remove one account
-	suite.accountKeeper.RemoveAccount(ctx, acc1)
-	acc1 = suite.accountKeeper.GetAccount(ctx, addr1)
-	suite.Require().Nil(acc1)
-
-	acc2 = suite.accountKeeper.GetAccount(ctx, addr2)
-	suite.Require().NotNil(acc2)
-	suite.Require().Equal(accSeq2, acc2.GetSequence())
-}
-
-func (suite *KeeperTestSuite) TestGetSetParams() {
-	ctx := suite.ctx
-	params := types.DefaultParams()
-
-	err := suite.accountKeeper.SetParams(ctx, params)
-	suite.Require().NoError(err)
-
-	actualParams := suite.accountKeeper.GetParams(ctx)
-	suite.Require().Equal(params, actualParams)
 }
 
 func (suite *KeeperTestSuite) TestSupply_ValidatePermissions() {
@@ -178,7 +127,8 @@ func (suite *KeeperTestSuite) TestInitGenesis() {
 	}
 
 	ctx := suite.ctx
-	suite.accountKeeper.InitGenesis(ctx, genState)
+	err := suite.accountKeeper.InitGenesis(ctx, genState)
+	require.NoError(suite.T(), err)
 
 	params := suite.accountKeeper.GetParams(ctx)
 	suite.Require().Equal(genState.Params.MaxMemoCharacters, params.MaxMemoCharacters, "MaxMemoCharacters")
@@ -224,9 +174,15 @@ func (suite *KeeperTestSuite) TestInitGenesis() {
 		genState.Accounts = append(genState.Accounts, codectypes.UnsafePackAny(acct))
 	}
 
-	suite.accountKeeper.InitGenesis(ctx, genState)
+	err = suite.accountKeeper.InitGenesis(ctx, genState)
+	require.NoError(suite.T(), err)
 
-	keeperAccts := suite.accountKeeper.GetAllAccounts(ctx)
+	var keeperAccts []sdk.AccountI
+	err = suite.accountKeeper.Accounts.Walk(ctx, nil, func(_ sdk.AccAddress, value sdk.AccountI) (stop bool, err error) {
+		keeperAccts = append(keeperAccts, value)
+		return false, nil
+	})
+	require.NoError(suite.T(), err)
 	// len(accts)+1 because we initialize fee_collector account after the genState accounts
 	suite.Require().Equal(len(keeperAccts), len(accts)+1, "number of accounts in the keeper vs in genesis state")
 	for i, genAcct := range accts {
@@ -253,7 +209,8 @@ func (suite *KeeperTestSuite) TestInitGenesis() {
 	suite.Require().Equal(6, int(feeCollector.GetAccountNumber()))
 
 	// The 3rd account has account number 5, but because the FeeCollector account gets initialized last, the next should be 7.
-	nextNum := suite.accountKeeper.NextAccountNumber(ctx)
+	nextNum, err := suite.accountKeeper.AccountsModKeeper.NextAccountNumber(ctx)
+	suite.Require().NoError(err)
 	suite.Require().Equal(7, int(nextNum))
 
 	suite.SetupTest() // reset
@@ -271,9 +228,15 @@ func (suite *KeeperTestSuite) TestInitGenesis() {
 		},
 	}
 
-	suite.accountKeeper.InitGenesis(ctx, genState)
+	err = suite.accountKeeper.InitGenesis(ctx, genState)
+	require.NoError(suite.T(), err)
 
-	keeperAccts = suite.accountKeeper.GetAllAccounts(ctx)
+	keeperAccts = nil
+	err = suite.accountKeeper.Accounts.Walk(ctx, nil, func(_ sdk.AccAddress, value sdk.AccountI) (stop bool, err error) {
+		keeperAccts = append(keeperAccts, value)
+		return false, nil
+	})
+	require.NoError(suite.T(), err)
 	// len(genState.Accounts)+1 because we initialize fee_collector as account number 1 (last)
 	suite.Require().Equal(len(keeperAccts), len(genState.Accounts)+1, "number of accounts in the keeper vs in genesis state")
 
@@ -282,7 +245,8 @@ func (suite *KeeperTestSuite) TestInitGenesis() {
 	feeCollector = suite.accountKeeper.GetModuleAccount(ctx, "fee_collector")
 	suite.Require().Equal(1, int(feeCollector.GetAccountNumber()))
 
-	nextNum = suite.accountKeeper.NextAccountNumber(ctx)
+	nextNum, err = suite.accountKeeper.AccountsModKeeper.NextAccountNumber(ctx)
+	suite.Require().NoError(err)
 	// we expect nextNum to be 2 because we initialize fee_collector as account number 1
 	suite.Require().Equal(2, int(nextNum))
 }

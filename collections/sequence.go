@@ -6,13 +6,13 @@ import (
 )
 
 // DefaultSequenceStart defines the default starting number of a sequence.
-const DefaultSequenceStart uint64 = 1
+const DefaultSequenceStart uint64 = 0
 
 // Sequence builds on top of an Item, and represents a monotonically increasing number.
 type Sequence Item[uint64]
 
 // NewSequence instantiates a new sequence given
-// a Schema, a Prefix and humanised name for the sequence.
+// a Schema, a Prefix and humanized name for the sequence.
 func NewSequence(schema *SchemaBuilder, prefix Prefix, name string) Sequence {
 	return (Sequence)(NewItem(schema, prefix, name, Uint64Value))
 }
@@ -32,7 +32,7 @@ func (s Sequence) Peek(ctx context.Context) (uint64, error) {
 	}
 }
 
-// Next returns the next sequence number, and sets the next expected sequence.
+// Next returns the current sequence number, and sets the next expected sequence.
 // Errors on encoding issues.
 func (s Sequence) Next(ctx context.Context) (uint64, error) {
 	seq, err := s.Peek(ctx)

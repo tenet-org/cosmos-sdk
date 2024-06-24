@@ -5,15 +5,19 @@ import (
 	"fmt"
 	"time"
 
-	"cosmossdk.io/depinject"
-	sdkmath "cosmossdk.io/math"
-	abci "github.com/cometbft/cometbft/abci/types"
+	abci "github.com/cometbft/cometbft/api/cometbft/abci/v1"
+	cmtproto "github.com/cometbft/cometbft/api/cometbft/types/v1"
 	cmtjson "github.com/cometbft/cometbft/libs/json"
-	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	cmttypes "github.com/cometbft/cometbft/types"
 	dbm "github.com/cosmos/cosmos-db"
 
-	"cosmossdk.io/log"
+	coreheader "cosmossdk.io/core/header"
+	"cosmossdk.io/depinject"
+	sdkmath "cosmossdk.io/math"
+	authtypes "cosmossdk.io/x/auth/types"
+	banktypes "cosmossdk.io/x/bank/types"
+	stakingtypes "cosmossdk.io/x/staking/types"
+
 	"github.com/cosmos/cosmos-sdk/client/flags"
 	"github.com/cosmos/cosmos-sdk/codec"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
@@ -23,9 +27,6 @@ import (
 	servertypes "github.com/cosmos/cosmos-sdk/server/types"
 	"github.com/cosmos/cosmos-sdk/testutil/mock"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
-	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
-	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 )
 
 const DefaultGenTxGas = 10000000
@@ -33,9 +34,12 @@ const DefaultGenTxGas = 10000000
 // DefaultConsensusParams defines the default CometBFT consensus params used in
 // SimApp testing.
 var DefaultConsensusParams = &cmtproto.ConsensusParams{
+	Version: &cmtproto.VersionParams{
+		App: 1,
+	},
 	Block: &cmtproto.BlockParams{
 		MaxBytes: 200000,
-		MaxGas:   2000000,
+		MaxGas:   100_000_000,
 	},
 	Evidence: &cmtproto.EvidenceParams{
 		MaxAgeNumBlocks: 302400,
@@ -45,6 +49,7 @@ var DefaultConsensusParams = &cmtproto.ConsensusParams{
 	Validator: &cmtproto.ValidatorParams{
 		PubKeyTypes: []string{
 			cmttypes.ABCIPubKeyTypeEd25519,
+			cmttypes.ABCIPubKeyTypeSecp256k1,
 		},
 	},
 }
@@ -78,6 +83,7 @@ type StartupConfig struct {
 	BaseAppOption   runtime.BaseAppOption
 	AtGenesis       bool
 	GenesisAccounts []GenesisAccount
+	DB              dbm.DB
 }
 
 func DefaultStartUpConfig() StartupConfig {
@@ -88,6 +94,7 @@ func DefaultStartUpConfig() StartupConfig {
 		ValidatorSet:    CreateRandomValidatorSet,
 		AtGenesis:       false,
 		GenesisAccounts: []GenesisAccount{ga},
+		DB:              dbm.NewMemDB(),
 	}
 }
 
@@ -105,6 +112,31 @@ func SetupAtGenesis(appConfig depinject.Config, extraOutputs ...interface{}) (*r
 	return SetupWithConfiguration(appConfig, cfg, extraOutputs...)
 }
 
+// NextBlock starts a new block.
+func NextBlock(app *runtime.App, ctx sdk.Context, jumpTime time.Duration) (sdk.Context, error) {
+	_, err := app.FinalizeBlock(&abci.FinalizeBlockRequest{Height: ctx.BlockHeight(), Time: ctx.BlockTime()})
+	if err != nil {
+		return sdk.Context{}, err
+	}
+	_, err = app.Commit()
+	if err != nil {
+		return sdk.Context{}, err
+	}
+
+	newBlockTime := ctx.BlockTime().Add(jumpTime)
+
+	header := ctx.BlockHeader()
+	header.Time = newBlockTime
+	header.Height++
+
+	newCtx := app.BaseApp.NewUncachedContext(false, header).WithHeaderInfo(coreheader.Info{
+		Height: header.Height,
+		Time:   header.Time,
+	})
+
+	return newCtx, nil
+}
+
 // SetupWithConfiguration initializes a new runtime.App. A Nop logger is set in runtime.App.
 // appConfig defines the application configuration (f.e. app_config.go).
 // extraOutputs defines the extra outputs to be assigned by the dependency injector (depinject).
@@ -116,17 +148,14 @@ func SetupWithConfiguration(appConfig depinject.Config, startupConfig StartupCon
 		codec      codec.Codec
 	)
 
-	if err := depinject.Inject(
-		appConfig,
-		append(extraOutputs, &appBuilder, &codec)...,
-	); err != nil {
+	if err := depinject.Inject(appConfig, append(extraOutputs, &appBuilder, &codec)...); err != nil {
 		return nil, fmt.Errorf("failed to inject dependencies: %w", err)
 	}
 
 	if startupConfig.BaseAppOption != nil {
-		app = appBuilder.Build(log.NewNopLogger(), dbm.NewMemDB(), nil, startupConfig.BaseAppOption)
+		app = appBuilder.Build(startupConfig.DB, nil, startupConfig.BaseAppOption)
 	} else {
-		app = appBuilder.Build(log.NewNopLogger(), dbm.NewMemDB(), nil)
+		app = appBuilder.Build(startupConfig.DB, nil)
 	}
 	if err := app.Load(true); err != nil {
 		return nil, fmt.Errorf("failed to load app: %w", err)
@@ -159,23 +188,24 @@ func SetupWithConfiguration(appConfig depinject.Config, startupConfig StartupCon
 	}
 
 	// init chain will set the validator set and initialize the genesis accounts
-	app.InitChain(
-		abci.RequestInitChain{
-			Validators:      []abci.ValidatorUpdate{},
-			ConsensusParams: DefaultConsensusParams,
-			AppStateBytes:   stateBytes,
-		},
-	)
+	_, err = app.InitChain(&abci.InitChainRequest{
+		Validators:      []abci.ValidatorUpdate{},
+		ConsensusParams: DefaultConsensusParams,
+		AppStateBytes:   stateBytes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to init chain: %w", err)
+	}
 
 	// commit genesis changes
 	if !startupConfig.AtGenesis {
-		app.Commit()
-		app.BeginBlock(abci.RequestBeginBlock{Header: cmtproto.Header{
+		_, err = app.FinalizeBlock(&abci.FinalizeBlockRequest{
 			Height:             app.LastBlockHeight() + 1,
-			AppHash:            app.LastCommitID().Hash,
-			ValidatorsHash:     valSet.Hash(),
 			NextValidatorsHash: valSet.Hash(),
-		}})
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to finalize block: %w", err)
+		}
 	}
 
 	return app, nil
@@ -223,7 +253,7 @@ func GenesisStateWithValSet(
 			MinSelfDelegation: sdkmath.ZeroInt(),
 		}
 		validators = append(validators, validator)
-		delegations = append(delegations, stakingtypes.NewDelegation(genAccs[0].GetAddress(), val.Address.Bytes(), sdkmath.LegacyOneDec()))
+		delegations = append(delegations, stakingtypes.NewDelegation(genAccs[0].GetAddress().String(), sdk.ValAddress(val.Address).String(), sdkmath.LegacyOneDec()))
 
 	}
 

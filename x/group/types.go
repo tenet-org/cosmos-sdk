@@ -4,16 +4,17 @@ import (
 	"fmt"
 	"time"
 
-	proto "github.com/cosmos/gogoproto/proto"
+	"github.com/cosmos/gogoproto/proto"
 
+	"cosmossdk.io/core/address"
 	errorsmod "cosmossdk.io/errors"
+	"cosmossdk.io/x/group/errors"
+	"cosmossdk.io/x/group/internal/math"
+	"cosmossdk.io/x/group/internal/orm"
 
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
-	"github.com/cosmos/cosmos-sdk/x/group/errors"
-	"github.com/cosmos/cosmos-sdk/x/group/internal/math"
-	"github.com/cosmos/cosmos-sdk/x/group/internal/orm"
 )
 
 // DecisionPolicyResult is the result of whether a proposal passes or not a
@@ -51,7 +52,7 @@ type DecisionPolicy interface {
 var _ DecisionPolicy = &ThresholdDecisionPolicy{}
 
 // NewThresholdDecisionPolicy creates a threshold DecisionPolicy
-func NewThresholdDecisionPolicy(threshold string, votingPeriod time.Duration, minExecutionPeriod time.Duration) DecisionPolicy {
+func NewThresholdDecisionPolicy(threshold string, votingPeriod, minExecutionPeriod time.Duration) DecisionPolicy {
 	return &ThresholdDecisionPolicy{threshold, &DecisionPolicyWindows{votingPeriod, minExecutionPeriod}}
 }
 
@@ -156,7 +157,7 @@ func (p *ThresholdDecisionPolicy) Validate(g GroupInfo, config Config) error {
 var _ DecisionPolicy = &PercentageDecisionPolicy{}
 
 // NewPercentageDecisionPolicy creates a new percentage DecisionPolicy
-func NewPercentageDecisionPolicy(percentage string, votingPeriod time.Duration, executionPeriod time.Duration) DecisionPolicy {
+func NewPercentageDecisionPolicy(percentage string, votingPeriod, executionPeriod time.Duration) DecisionPolicy {
 	return &PercentageDecisionPolicy{percentage, &DecisionPolicyWindows{votingPeriod, executionPeriod}}
 }
 
@@ -244,13 +245,13 @@ func (p PercentageDecisionPolicy) Allow(tally TallyResult, totalPower string) (D
 var _ orm.Validateable = GroupPolicyInfo{}
 
 // NewGroupPolicyInfo creates a new GroupPolicyInfo instance
-func NewGroupPolicyInfo(address sdk.AccAddress, group uint64, admin sdk.AccAddress, metadata string,
+func NewGroupPolicyInfo(address string, group uint64, admin, metadata string,
 	version uint64, decisionPolicy DecisionPolicy, createdAt time.Time,
 ) (GroupPolicyInfo, error) {
 	p := GroupPolicyInfo{
-		Address:   address.String(),
+		Address:   address,
 		GroupId:   group,
-		Admin:     admin.String(),
+		Admin:     admin,
 		Metadata:  metadata,
 		Version:   version,
 		CreatedAt: createdAt,
@@ -290,8 +291,8 @@ func (g GroupPolicyInfo) UnpackInterfaces(unpacker codectypes.AnyUnpacker) error
 	return unpacker.UnpackAny(g.DecisionPolicy, &decisionPolicy)
 }
 
-func (g GroupInfo) PrimaryKeyFields() []interface{} {
-	return []interface{}{g.Id}
+func (g GroupInfo) PrimaryKeyFields(_ address.Codec) ([]interface{}, error) {
+	return []interface{}{g.Id}, nil
 }
 
 // ValidateBasic does basic validation on group info.
@@ -314,14 +315,17 @@ func (g GroupInfo) ValidateBasic() error {
 	return nil
 }
 
-func (g GroupPolicyInfo) PrimaryKeyFields() []interface{} {
-	addr := sdk.MustAccAddressFromBech32(g.Address)
+func (g GroupPolicyInfo) PrimaryKeyFields(addressCodec address.Codec) ([]interface{}, error) {
+	addr, err := addressCodec.StringToBytes(g.Address)
+	if err != nil {
+		return nil, err
+	}
 
-	return []interface{}{addr.Bytes()}
+	return []interface{}{addr}, nil
 }
 
-func (g Proposal) PrimaryKeyFields() []interface{} {
-	return []interface{}{g.Id}
+func (g Proposal) PrimaryKeyFields(_ address.Codec) ([]interface{}, error) {
+	return []interface{}{g.Id}, nil
 }
 
 // ValidateBasic does basic validation on group policy info.
@@ -352,10 +356,13 @@ func (g GroupPolicyInfo) ValidateBasic() error {
 	return nil
 }
 
-func (g GroupMember) PrimaryKeyFields() []interface{} {
-	addr := sdk.MustAccAddressFromBech32(g.Member.Address)
+func (g GroupMember) PrimaryKeyFields(addressCodec address.Codec) ([]interface{}, error) {
+	addr, err := addressCodec.StringToBytes(g.Member.Address)
+	if err != nil {
+		return nil, err
+	}
 
-	return []interface{}{g.GroupId, addr.Bytes()}
+	return []interface{}{g.GroupId, addr}, nil
 }
 
 // ValidateBasic does basic validation on group member.
@@ -364,10 +371,14 @@ func (g GroupMember) ValidateBasic() error {
 		return errorsmod.Wrap(errors.ErrEmpty, "group member's group id")
 	}
 
-	err := MemberToMemberRequest(g.Member).ValidateBasic()
-	if err != nil {
-		return errorsmod.Wrap(err, "group member")
+	if _, err := sdk.AccAddressFromBech32(g.Member.Address); err != nil {
+		return errorsmod.Wrap(err, "group member's address")
 	}
+
+	if _, err := math.NewNonNegativeDecFromString(g.Member.Weight); err != nil {
+		return errorsmod.Wrap(err, "weight must be non negative")
+	}
+
 	return nil
 }
 
@@ -417,10 +428,13 @@ func (g Proposal) ValidateBasic() error {
 	return nil
 }
 
-func (v Vote) PrimaryKeyFields() []interface{} {
-	addr := sdk.MustAccAddressFromBech32(v.Voter)
+func (v Vote) PrimaryKeyFields(addressCodec address.Codec) ([]interface{}, error) {
+	addr, err := addressCodec.StringToBytes(v.Voter)
+	if err != nil {
+		return nil, err
+	}
 
-	return []interface{}{v.ProposalId, addr.Bytes()}
+	return []interface{}{v.ProposalId, addr}, nil
 }
 
 var _ orm.Validateable = Vote{}

@@ -1,9 +1,10 @@
 package ante_test
 
 import (
+	"context"
 	"testing"
 
-	abci "github.com/cometbft/cometbft/abci/types"
+	abci "github.com/cometbft/cometbft/api/cometbft/abci/v1"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 
@@ -11,28 +12,34 @@ import (
 	// ref: https://github.com/cosmos/cosmos-sdk/issues/14647
 	_ "cosmossdk.io/api/cosmos/bank/v1beta1"
 	_ "cosmossdk.io/api/cosmos/crypto/secp256k1"
-	_ "github.com/cosmos/cosmos-sdk/testutil/testdata/testpb"
-
+	"cosmossdk.io/core/appmodule"
+	"cosmossdk.io/core/log"
 	storetypes "cosmossdk.io/store/types"
+	"cosmossdk.io/x/auth"
+	"cosmossdk.io/x/auth/ante"
+	antetestutil "cosmossdk.io/x/auth/ante/testutil"
+	authcodec "cosmossdk.io/x/auth/codec"
+	"cosmossdk.io/x/auth/keeper"
+	xauthsigning "cosmossdk.io/x/auth/signing"
+	authtestutil "cosmossdk.io/x/auth/testutil"
+	txtestutil "cosmossdk.io/x/auth/tx/testutil"
+	"cosmossdk.io/x/auth/types"
+	consensustypes "cosmossdk.io/x/consensus/types"
 
+	"github.com/cosmos/cosmos-sdk/baseapp"
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/tx"
+	codectestutil "github.com/cosmos/cosmos-sdk/codec/testutil"
 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
+	"github.com/cosmos/cosmos-sdk/runtime"
 	"github.com/cosmos/cosmos-sdk/testutil"
 	clitestutil "github.com/cosmos/cosmos-sdk/testutil/cli"
+	simtestutil "github.com/cosmos/cosmos-sdk/testutil/sims"
 	"github.com/cosmos/cosmos-sdk/testutil/testdata"
+	_ "github.com/cosmos/cosmos-sdk/testutil/testdata/testpb"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	moduletestutil "github.com/cosmos/cosmos-sdk/types/module/testutil"
 	"github.com/cosmos/cosmos-sdk/types/tx/signing"
-	"github.com/cosmos/cosmos-sdk/x/auth"
-	"github.com/cosmos/cosmos-sdk/x/auth/ante"
-	antetestutil "github.com/cosmos/cosmos-sdk/x/auth/ante/testutil"
-	"github.com/cosmos/cosmos-sdk/x/auth/keeper"
-	xauthsigning "github.com/cosmos/cosmos-sdk/x/auth/signing"
-	authtestutil "github.com/cosmos/cosmos-sdk/x/auth/testutil"
-	txtestutil "github.com/cosmos/cosmos-sdk/x/auth/tx/testutil"
-	"github.com/cosmos/cosmos-sdk/x/auth/types"
-	"github.com/cosmos/cosmos-sdk/x/bank"
 )
 
 // TestAccount represents an account used in the tests in x/auth/ante.
@@ -43,30 +50,42 @@ type TestAccount struct {
 
 // AnteTestSuite is a test suite to be used with ante handler tests.
 type AnteTestSuite struct {
-	anteHandler    sdk.AnteHandler
-	ctx            sdk.Context
-	clientCtx      client.Context
-	txBuilder      client.TxBuilder
-	accountKeeper  keeper.AccountKeeper
-	bankKeeper     *authtestutil.MockBankKeeper
-	txBankKeeper   *txtestutil.MockBankKeeper
-	feeGrantKeeper *antetestutil.MockFeegrantKeeper
-	encCfg         moduletestutil.TestEncodingConfig
+	env             appmodule.Environment
+	anteHandler     sdk.AnteHandler
+	ctx             sdk.Context
+	clientCtx       client.Context
+	txBuilder       client.TxBuilder
+	accountKeeper   keeper.AccountKeeper
+	bankKeeper      *authtestutil.MockBankKeeper
+	consensusKeeper *antetestutil.MockConsensusKeeper
+	acctsModKeeper  *authtestutil.MockAccountsModKeeper
+	txBankKeeper    *txtestutil.MockBankKeeper
+	feeGrantKeeper  *antetestutil.MockFeegrantKeeper
+	encCfg          moduletestutil.TestEncodingConfig
 }
 
 // SetupTest setups a new test, with new app, context, and anteHandler.
 func SetupTestSuite(t *testing.T, isCheckTx bool) *AnteTestSuite {
+	t.Helper()
 	suite := &AnteTestSuite{}
+	// gomock initializations
 	ctrl := gomock.NewController(t)
 	suite.bankKeeper = authtestutil.NewMockBankKeeper(ctrl)
 	suite.txBankKeeper = txtestutil.NewMockBankKeeper(ctrl)
 	suite.feeGrantKeeper = antetestutil.NewMockFeegrantKeeper(ctrl)
+	suite.acctsModKeeper = authtestutil.NewMockAccountsModKeeper(ctrl)
 
 	key := storetypes.NewKVStoreKey(types.StoreKey)
 	testCtx := testutil.DefaultContextWithDB(t, key, storetypes.NewTransientStoreKey("transient_test"))
-	suite.ctx = testCtx.Ctx.WithIsCheckTx(isCheckTx).WithBlockHeight(1) // app.BaseApp.NewContext(isCheckTx, cmtproto.Header{}).WithBlockHeight(1)
-	suite.encCfg = moduletestutil.MakeTestEncodingConfig(auth.AppModuleBasic{}, bank.AppModuleBasic{})
+	suite.ctx = testCtx.Ctx.WithIsCheckTx(isCheckTx).WithBlockHeight(1)
+	suite.encCfg = moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, auth.AppModule{})
 
+	accNum := uint64(0)
+	suite.acctsModKeeper.EXPECT().NextAccountNumber(gomock.Any()).AnyTimes().DoAndReturn(func(ctx context.Context) (uint64, error) {
+		currNum := accNum
+		accNum++
+		return currNum, nil
+	})
 	maccPerms := map[string][]string{
 		"fee_collector":          nil,
 		"mint":                   {"minter"},
@@ -76,20 +95,32 @@ func SetupTestSuite(t *testing.T, isCheckTx bool) *AnteTestSuite {
 		"random":                 {"random"},
 	}
 
+	msgRouter := baseapp.NewMsgServiceRouter()
+	grpcQueryRouter := baseapp.NewGRPCQueryRouter()
+	grpcQueryRouter.SetInterfaceRegistry(suite.encCfg.InterfaceRegistry)
+
+	suite.consensusKeeper = antetestutil.NewMockConsensusKeeper(ctrl)
+	suite.consensusKeeper.EXPECT().Params(gomock.Any(), gomock.Any()).Return(&consensustypes.QueryParamsResponse{
+		Params: simtestutil.DefaultConsensusParams,
+	}, nil).AnyTimes()
+	consensustypes.RegisterQueryServer(grpcQueryRouter, suite.consensusKeeper)
+
+	suite.env = runtime.NewEnvironment(runtime.NewKVStoreService(key), log.NewNopLogger(), runtime.EnvWithQueryRouterService(grpcQueryRouter), runtime.EnvWithMsgRouterService(msgRouter))
 	suite.accountKeeper = keeper.NewAccountKeeper(
-		suite.encCfg.Codec, key, types.ProtoBaseAccount, maccPerms, sdk.Bech32MainPrefix, types.NewModuleAddress("gov").String(),
+		runtime.NewEnvironment(runtime.NewKVStoreService(key), log.NewNopLogger()), suite.encCfg.Codec, types.ProtoBaseAccount, suite.acctsModKeeper, maccPerms, authcodec.NewBech32Codec("cosmos"),
+		sdk.Bech32MainPrefix, types.NewModuleAddress("gov").String(),
 	)
 	suite.accountKeeper.GetModuleAccount(suite.ctx, types.FeeCollectorName)
-	err := suite.accountKeeper.SetParams(suite.ctx, types.DefaultParams())
+	err := suite.accountKeeper.Params.Set(suite.ctx, types.DefaultParams())
 	require.NoError(t, err)
 
 	// We're using TestMsg encoding in some tests, so register it here.
-	suite.encCfg.Amino.RegisterConcrete(&testdata.TestMsg{}, "testdata.TestMsg", nil)
+	suite.encCfg.Amino.RegisterConcrete(&testdata.TestMsg{}, "testdata.TestMsg")
 	testdata.RegisterInterfaces(suite.encCfg.InterfaceRegistry)
 
 	suite.clientCtx = client.Context{}.
 		WithTxConfig(suite.encCfg.TxConfig).
-		WithClient(clitestutil.NewMockCometRPC(abci.ResponseQuery{}))
+		WithClient(clitestutil.NewMockCometRPC(abci.QueryResponse{}))
 
 	anteHandler, err := ante.NewAnteHandler(
 		ante.HandlerOptions{
@@ -98,6 +129,7 @@ func SetupTestSuite(t *testing.T, isCheckTx bool) *AnteTestSuite {
 			FeegrantKeeper:  suite.feeGrantKeeper,
 			SignModeHandler: suite.encCfg.TxConfig.SignModeHandler(),
 			SigGasConsumer:  ante.DefaultSigVerificationGasConsumer,
+			Environment:     suite.env,
 		},
 	)
 
@@ -115,7 +147,10 @@ func (suite *AnteTestSuite) CreateTestAccounts(numAccs int) []TestAccount {
 	for i := 0; i < numAccs; i++ {
 		priv, _, addr := testdata.KeyTestPubAddr()
 		acc := suite.accountKeeper.NewAccountWithAddress(suite.ctx, addr)
-		acc.SetAccountNumber(uint64(i))
+		err := acc.SetAccountNumber(uint64(i + 1000))
+		if err != nil {
+			panic(err)
+		}
 		suite.accountKeeper.SetAccount(suite.ctx, acc)
 		accounts = append(accounts, TestAccount{acc, priv})
 	}
@@ -142,19 +177,34 @@ type TestCaseArgs struct {
 	privs     []cryptotypes.PrivKey
 }
 
+func (t TestCaseArgs) WithAccountsInfo(accs []TestAccount) TestCaseArgs {
+	newT := t
+	for _, acc := range accs {
+		newT.accNums = append(newT.accNums, acc.acc.GetAccountNumber())
+		newT.accSeqs = append(newT.accSeqs, acc.acc.GetSequence())
+		newT.privs = append(newT.privs, acc.priv)
+	}
+	return newT
+}
+
 // DeliverMsgs constructs a tx and runs it through the ante handler. This is used to set the context for a test case, for
 // example to test for replay protection.
 func (suite *AnteTestSuite) DeliverMsgs(t *testing.T, privs []cryptotypes.PrivKey, msgs []sdk.Msg, feeAmount sdk.Coins, gasLimit uint64, accNums, accSeqs []uint64, chainID string, simulate bool) (sdk.Context, error) {
+	t.Helper()
 	require.NoError(t, suite.txBuilder.SetMsgs(msgs...))
 	suite.txBuilder.SetFeeAmount(feeAmount)
 	suite.txBuilder.SetGasLimit(gasLimit)
 
 	tx, txErr := suite.CreateTestTx(suite.ctx, privs, accNums, accSeqs, chainID, signing.SignMode_SIGN_MODE_DIRECT)
 	require.NoError(t, txErr)
-	return suite.anteHandler(suite.ctx, tx, simulate)
+	txBytes, err := suite.clientCtx.TxConfig.TxEncoder()(tx)
+	bytesCtx := suite.ctx.WithTxBytes(txBytes)
+	require.NoError(t, err)
+	return suite.anteHandler(bytesCtx, tx, simulate)
 }
 
 func (suite *AnteTestSuite) RunTestCase(t *testing.T, tc TestCase, args TestCaseArgs) {
+	t.Helper()
 	require.NoError(t, suite.txBuilder.SetMsgs(args.msgs...))
 	suite.txBuilder.SetFeeAmount(args.feeAmount)
 	suite.txBuilder.SetGasLimit(args.gasLimit)
@@ -163,7 +213,10 @@ func (suite *AnteTestSuite) RunTestCase(t *testing.T, tc TestCase, args TestCase
 	// ante handlers, but here we sometimes also test the tx creation
 	// process.
 	tx, txErr := suite.CreateTestTx(suite.ctx, args.privs, args.accNums, args.accSeqs, args.chainID, signing.SignMode_SIGN_MODE_DIRECT)
-	newCtx, anteErr := suite.anteHandler(suite.ctx, tx, tc.simulate)
+	txBytes, err := suite.clientCtx.TxConfig.TxEncoder()(tx)
+	require.NoError(t, err)
+	bytesCtx := suite.ctx.WithTxBytes(txBytes)
+	newCtx, anteErr := suite.anteHandler(bytesCtx, tx, tc.simulate)
 
 	if tc.expPass {
 		require.NoError(t, txErr)
@@ -190,7 +243,7 @@ func (suite *AnteTestSuite) RunTestCase(t *testing.T, tc TestCase, args TestCase
 // CreateTestTx is a helper function to create a tx given multiple inputs.
 func (suite *AnteTestSuite) CreateTestTx(
 	ctx sdk.Context, privs []cryptotypes.PrivKey,
-	accNums []uint64, accSeqs []uint64,
+	accNums, accSeqs []uint64,
 	chainID string, signMode signing.SignMode,
 ) (xauthsigning.Tx, error) {
 	// First round: we gather all the signer infos. We use the "set empty

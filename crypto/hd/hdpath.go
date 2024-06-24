@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha512"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/big"
 	"path/filepath"
@@ -88,7 +89,7 @@ func NewParamsFromPath(path string) (*BIP44Params, error) {
 	}
 
 	if !(change == 0 || change == 1) {
-		return nil, fmt.Errorf("change field can only be 0 or 1")
+		return nil, errors.New("change field can only be 0 or 1")
 	}
 
 	return &BIP44Params{
@@ -156,7 +157,7 @@ func (p BIP44Params) String() string {
 }
 
 // ComputeMastersFromSeed returns the master secret key's, and chain code.
-func ComputeMastersFromSeed(seed []byte) (secret [32]byte, chainCode [32]byte) {
+func ComputeMastersFromSeed(seed []byte) (secret, chainCode [32]byte) {
 	curveIdentifier := []byte("Bitcoin seed")
 	secret, chainCode = i64(curveIdentifier, seed)
 
@@ -216,7 +217,7 @@ func DerivePrivateKeyForPath(privKeyBytes, chainCode [32]byte, path string) ([]b
 // It returns the new private key and new chain code.
 // For more information on hardened keys see:
 //   - https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki
-func derivePrivateKey(privKeyBytes [32]byte, chainCode [32]byte, index uint32, harden bool) ([32]byte, [32]byte) {
+func derivePrivateKey(privKeyBytes, chainCode [32]byte, index uint32, harden bool) ([32]byte, [32]byte) {
 	var data []byte
 
 	if harden {
@@ -244,7 +245,7 @@ func derivePrivateKey(privKeyBytes [32]byte, chainCode [32]byte, index uint32, h
 }
 
 // modular big endian addition
-func addScalars(a []byte, b []byte) [32]byte {
+func addScalars(a, b []byte) [32]byte {
 	aInt := new(big.Int).SetBytes(a)
 	bInt := new(big.Int).SetBytes(b)
 	sInt := new(big.Int).Add(aInt, bInt)
@@ -262,8 +263,8 @@ func uint32ToBytes(i uint32) []byte {
 	return b[:]
 }
 
-// i64 returns the two halfs of the SHA512 HMAC of key and data.
-func i64(key []byte, data []byte) (il [32]byte, ir [32]byte) {
+// i64 returns the two halves of the SHA512 HMAC of key and data.
+func i64(key, data []byte) (il, ir [32]byte) {
 	mac := hmac.New(sha512.New, key)
 	// sha512 does not err
 	_, _ = mac.Write(data)

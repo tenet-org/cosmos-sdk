@@ -6,8 +6,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"cosmossdk.io/core/address"
 	"cosmossdk.io/depinject"
+	"cosmossdk.io/log"
+	"cosmossdk.io/x/auth/migrations/legacytx"
+
 	"github.com/cosmos/cosmos-sdk/codec"
+	addresscodec "github.com/cosmos/cosmos-sdk/codec/address"
 	"github.com/cosmos/cosmos-sdk/codec/legacy"
 	"github.com/cosmos/cosmos-sdk/codec/types"
 	cryptocodec "github.com/cosmos/cosmos-sdk/crypto/codec"
@@ -18,7 +23,6 @@ import (
 	_ "github.com/cosmos/cosmos-sdk/runtime"
 	"github.com/cosmos/cosmos-sdk/testutil/configurator"
 	"github.com/cosmos/cosmos-sdk/types/tx/signing"
-	"github.com/cosmos/cosmos-sdk/x/auth/migrations/legacytx"
 )
 
 func TestNewMultiSig(t *testing.T) {
@@ -354,7 +358,15 @@ func TestDisplay(t *testing.T) {
 
 	require.NotEmpty(msig.String())
 	var cdc codec.Codec
-	err := depinject.Inject(configurator.NewAppConfig(), &cdc)
+	err := depinject.Inject(
+		depinject.Configs(
+			configurator.NewAppConfig(),
+			depinject.Supply(log.NewNopLogger(),
+				func() address.Codec { return addresscodec.NewBech32Codec("cosmos") },
+				func() address.ValidatorAddressCodec { return addresscodec.NewBech32Codec("cosmosvaloper") },
+				func() address.ConsensusAddressCodec { return addresscodec.NewBech32Codec("cosmosvalcons") },
+			),
+		), &cdc)
 	require.NoError(err)
 	bz, err := cdc.MarshalInterfaceJSON(msig)
 	require.NoError(err)

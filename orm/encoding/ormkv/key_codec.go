@@ -2,14 +2,14 @@ package ormkv
 
 import (
 	"bytes"
+	"errors"
 	"io"
-
-	"github.com/cosmos/cosmos-sdk/orm/types/ormerrors"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"github.com/cosmos/cosmos-sdk/orm/encoding/encodeutil"
-	"github.com/cosmos/cosmos-sdk/orm/encoding/ormfield"
+	"cosmossdk.io/orm/encoding/encodeutil"
+	"cosmossdk.io/orm/encoding/ormfield"
+	"cosmossdk.io/orm/types/ormerrors"
 )
 
 type KeyCodec struct {
@@ -123,7 +123,7 @@ func (cdc *KeyCodec) DecodeKey(r *bytes.Reader) ([]protoreflect.Value, error) {
 	values := make([]protoreflect.Value, 0, n)
 	for i := 0; i < n; i++ {
 		value, err := cdc.fieldCodecs[i].Decode(r)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return values, err
 		} else if err != nil {
 			return nil, err
@@ -177,11 +177,12 @@ func (cdc *KeyCodec) CompareKeys(values1, values2 []protoreflect.Value) int {
 	}
 
 	// values are equal but arrays of different length
-	if j == k {
+	switch {
+	case j == k:
 		return 0
-	} else if j < k {
+	case j < k:
 		return -1
-	} else {
+	default:
 		return 1
 	}
 }

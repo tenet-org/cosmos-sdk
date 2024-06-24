@@ -6,14 +6,17 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"cosmossdk.io/depinject"
+	sdkmath "cosmossdk.io/math"
 	"cosmossdk.io/x/feegrant"
+	"cosmossdk.io/x/feegrant/module"
 	"cosmossdk.io/x/feegrant/simulation"
-	feegranttestutil "cosmossdk.io/x/feegrant/testutil"
-	"github.com/cosmos/cosmos-sdk/codec"
+
+	addresscodec "github.com/cosmos/cosmos-sdk/codec/address"
+	codectestutil "github.com/cosmos/cosmos-sdk/codec/testutil"
 	"github.com/cosmos/cosmos-sdk/crypto/keys/ed25519"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/kv"
+	moduletestutil "github.com/cosmos/cosmos-sdk/types/module/testutil"
 )
 
 var (
@@ -23,12 +26,18 @@ var (
 )
 
 func TestDecodeStore(t *testing.T) {
-	var cdc codec.Codec
-	depinject.Inject(feegranttestutil.AppConfig, &cdc)
+	encodingConfig := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, module.AppModule{})
+	cdc := encodingConfig.Codec
 	dec := simulation.NewDecodeStore(cdc)
+	ac := addresscodec.NewBech32Codec("cosmos")
 
-	grant, err := feegrant.NewGrant(granterAddr, granteeAddr, &feegrant.BasicAllowance{
-		SpendLimit: sdk.NewCoins(sdk.NewCoin("foo", sdk.NewInt(100))),
+	granterStr, err := ac.BytesToString(granterAddr)
+	require.NoError(t, err)
+	granteeStr, err := ac.BytesToString(granteeAddr)
+	require.NoError(t, err)
+
+	grant, err := feegrant.NewGrant(granterStr, granteeStr, &feegrant.BasicAllowance{
+		SpendLimit: sdk.NewCoins(sdk.NewCoin("foo", sdkmath.NewInt(100))),
 	})
 
 	require.NoError(t, err)

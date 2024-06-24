@@ -4,13 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
-	"cosmossdk.io/tools/confix"
 	"github.com/creachadair/tomledit"
 	"github.com/creachadair/tomledit/parser"
 	"github.com/creachadair/tomledit/transform"
 	"github.com/spf13/cobra"
+
+	"cosmossdk.io/tools/confix"
 
 	"github.com/cosmos/cosmos-sdk/client"
 )
@@ -20,7 +22,7 @@ func SetCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set [config] [key] [value]",
 		Short: "Set an application config value",
-		Long:  "Set an application config value. The [config] argument must be the path of the file when using the tool standalone, otherwise it must be the name of the config file without the .toml extension.",
+		Long:  "Set an application config value. The [config] argument must be the path of the file when using the `confix` tool standalone, otherwise it must be the name of the config file without the .toml extension.",
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			filename, inputValue := args[0], args[2]
@@ -29,7 +31,7 @@ func SetCommand() *cobra.Command {
 
 			clientCtx := client.GetClientContextFromCmd(cmd)
 			if clientCtx.HomeDir != "" {
-				filename = fmt.Sprintf("%s/config/%s.toml", clientCtx.HomeDir, filename)
+				filename = filepath.Join(clientCtx.HomeDir, "config", filename+tomlSuffix)
 			}
 
 			plan := transform.Plan{
@@ -76,8 +78,8 @@ func SetCommand() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&FlagStdOut, "stdout", false, "print the updated config to stdout")
-	cmd.Flags().BoolVar(&FlagVerbose, "verbose", false, "log changes to stderr")
-	cmd.Flags().BoolVar(&FlagSkipValidate, "skip-validate", false, "skip configuration validation (allows to mutate unknown configurations)")
+	cmd.Flags().BoolVarP(&FlagVerbose, "verbose", "v", false, "log changes to stderr")
+	cmd.Flags().BoolVarP(&FlagSkipValidate, "skip-validate", "s", false, "skip configuration validation (allows to mutate unknown configurations)")
 
 	return cmd
 }
@@ -87,7 +89,7 @@ func GetCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get [config] [key]",
 		Short: "Get an application config value",
-		Long:  "Get an application config value. The [config] argument must be the path of the file when using the too standalone, otherwise it must be the name of the config file without the .toml extension.",
+		Long:  "Get an application config value. The [config] argument must be the path of the file when using the `confix` tool standalone, otherwise it must be the name of the config file without the .toml extension.",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			filename, key := args[0], args[1]
@@ -96,7 +98,7 @@ func GetCommand() *cobra.Command {
 
 			clientCtx := client.GetClientContextFromCmd(cmd)
 			if clientCtx.HomeDir != "" {
-				filename = fmt.Sprintf("%s/config/%s.toml", clientCtx.HomeDir, filename)
+				filename = filepath.Join(clientCtx.HomeDir, "config", filename+tomlSuffix)
 			}
 
 			doc, err := confix.LoadConfig(filename)

@@ -13,11 +13,12 @@ private
 
 # Build
 vendor
-build
+/build
 dist
 tools-stamp
 buf-stamp
 artifacts
+simapp/simd/simd
 
 # Go
 go.work
@@ -35,6 +36,7 @@ coverage.txt
 sim_log_file
 x/genutil/config
 x/genutil/data
+*.fail
 
 # Vagrant
 .vagrant/
@@ -45,6 +47,8 @@ vagrant
 # IDE
 .idea
 *.iml
+*.ipr
+*.iws
 .dir-locals.el
 .vscode
 

@@ -3,10 +3,14 @@ package keys
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"sort"
+	"strings"
 
 	"github.com/cosmos/go-bip39"
 	"github.com/spf13/cobra"
@@ -15,23 +19,28 @@ import (
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/flags"
 	"github.com/cosmos/cosmos-sdk/client/input"
+	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	"github.com/cosmos/cosmos-sdk/crypto/hd"
 	"github.com/cosmos/cosmos-sdk/crypto/keyring"
 	"github.com/cosmos/cosmos-sdk/crypto/keys/multisig"
+	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )
 
 const (
-	flagInteractive = "interactive"
-	flagRecover     = "recover"
-	flagNoBackup    = "no-backup"
-	flagCoinType    = "coin-type"
-	flagAccount     = "account"
-	flagIndex       = "index"
-	flagMultisig    = "multisig"
-	flagNoSort      = "nosort"
-	flagHDPath      = "hd-path"
+	flagInteractive  = "interactive"
+	flagRecover      = "recover"
+	flagNoBackup     = "no-backup"
+	flagCoinType     = "coin-type"
+	flagAccount      = "account"
+	flagIndex        = "index"
+	flagMultisig     = "multisig"
+	flagNoSort       = "nosort"
+	flagHDPath       = "hd-path"
+	flagPubKeyBase64 = "pubkey-base64"
+	flagIndiscreet   = "indiscreet"
+	flagMnemonicSrc  = "source"
 
 	// DefaultKeyPass contains the default key password for genesis transactions
 	DefaultKeyPass = "12345678"
@@ -54,6 +63,11 @@ local keystore.
 Use the --pubkey flag to add arbitrary public keys to the keystore for constructing
 multisig transactions.
 
+Use the --source flag to import mnemonic from a file in recover or interactive mode. 
+Example:
+
+	keys add testing --recover --source ./mnemonic.txt
+
 You can create and store a multisig key by passing the list of key names stored in a keyring
 and the minimum number of signatures required through --multisig-threshold. The keys are
 sorted by address, unless the flag --nosort is set.
@@ -69,20 +83,23 @@ Example:
 	f.Int(flagMultiSigThreshold, 1, "K out of N required signatures. For use in conjunction with --multisig")
 	f.Bool(flagNoSort, false, "Keys passed to --multisig are taken in the order they're supplied")
 	f.String(FlagPublicKey, "", "Parse a public key in JSON format and saves key info to <name> file.")
+	f.String(flagPubKeyBase64, "", "Parse a public key in base64 format and saves key info.")
 	f.BoolP(flagInteractive, "i", false, "Interactively prompt user for BIP39 passphrase and mnemonic")
 	f.Bool(flags.FlagUseLedger, false, "Store a local reference to a private key on a Ledger device")
 	f.Bool(flagRecover, false, "Provide seed phrase to recover existing key instead of creating")
 	f.Bool(flagNoBackup, false, "Don't print out seed phrase (if others are watching the terminal)")
 	f.Bool(flags.FlagDryRun, false, "Perform action, but don't add key to local keystore")
 	f.String(flagHDPath, "", "Manual HD Path derivation (overrides BIP44 config)")
-	f.Uint32(flagCoinType, sdk.GetConfig().GetCoinType(), "coin type number for HD derivation")
+	f.Uint32(flagCoinType, sdk.CoinType, "coin type number for HD derivation")
 	f.Uint32(flagAccount, 0, "Account number for HD derivation (less than equal 2147483647)")
 	f.Uint32(flagIndex, 0, "Address index number for HD derivation (less than equal 2147483647)")
 	f.String(flags.FlagKeyType, string(hd.Secp256k1Type), "Key signing algorithm to generate keys for")
+	f.Bool(flagIndiscreet, false, "Print seed phrase directly on current terminal (only valid when --no-backup is false)")
+	f.String(flagMnemonicSrc, "", "Import mnemonic from a file (only usable when recover or interactive is passed)")
 
 	// support old flags name for backwards compatibility
 	f.SetNormalizeFunc(func(f *pflag.FlagSet, name string) pflag.NormalizedName {
-		if name == "algo" {
+		if name == flags.FlagKeyAlgorithm {
 			name = flags.FlagKeyType
 		}
 
@@ -116,9 +133,10 @@ func runAddCmd(ctx client.Context, cmd *cobra.Command, args []string, inBuf *buf
 	var err error
 
 	name := args[0]
+	if strings.TrimSpace(name) == "" {
+		return errors.New("the provided name is invalid or empty after trimming whitespace")
+	}
 	interactive, _ := cmd.Flags().GetBool(flagInteractive)
-	noBackup, _ := cmd.Flags().GetBool(flagNoBackup)
-	showMnemonic := !noBackup
 	kb := ctx.Keyring
 	outputFormat := ctx.OutputFormat
 
@@ -159,8 +177,14 @@ func runAddCmd(ctx client.Context, cmd *cobra.Command, args []string, inBuf *buf
 				return err
 			}
 
-			for i, keyname := range multisigKeys {
-				k, err := kb.Key(keyname)
+			seenKeys := make(map[string]struct{})
+			for i, keyName := range multisigKeys {
+				if _, ok := seenKeys[keyName]; ok {
+					return fmt.Errorf("duplicate multisig keys: %s", keyName)
+				}
+				seenKeys[keyName] = struct{}{}
+
+				k, err := kb.Key(keyName)
 				if err != nil {
 					return err
 				}
@@ -184,11 +208,15 @@ func runAddCmd(ctx client.Context, cmd *cobra.Command, args []string, inBuf *buf
 				return err
 			}
 
-			return printCreate(cmd, k, false, "", outputFormat)
+			return printCreate(ctx, cmd, k, false, false, "", outputFormat)
 		}
 	}
 
 	pubKey, _ := cmd.Flags().GetString(FlagPublicKey)
+	pubKeyBase64, _ := cmd.Flags().GetString(flagPubKeyBase64)
+	if pubKey != "" && pubKeyBase64 != "" {
+		return fmt.Errorf(`flags %s and %s cannot be used simultaneously`, FlagPublicKey, flagPubKeyBase64)
+	}
 	if pubKey != "" {
 		var pk cryptotypes.PubKey
 		if err = ctx.Codec.UnmarshalInterfaceJSON([]byte(pubKey), &pk); err != nil {
@@ -200,7 +228,40 @@ func runAddCmd(ctx client.Context, cmd *cobra.Command, args []string, inBuf *buf
 			return err
 		}
 
-		return printCreate(cmd, k, false, "", outputFormat)
+		return printCreate(ctx, cmd, k, false, false, "", outputFormat)
+	}
+	if pubKeyBase64 != "" {
+		b64, err := base64.StdEncoding.DecodeString(pubKeyBase64)
+		if err != nil {
+			return err
+		}
+
+		var pk cryptotypes.PubKey
+
+		// create an empty seckp256k1 pubkey since it is the key returned by algo Generate function.
+		enotySecpPubKey, err := codectypes.NewAnyWithValue(&secp256k1.PubKey{})
+		if err != nil {
+			return err
+		}
+
+		jsonPub, err := json.Marshal(struct {
+			Type string `json:"@type,omitempty"`
+			Key  string `json:"key,omitempty"`
+		}{enotySecpPubKey.TypeUrl, string(b64)})
+		if err != nil {
+			return fmt.Errorf("failed to JSON marshal typeURL and base64 key: %w", err)
+		}
+
+		if err = ctx.Codec.UnmarshalInterfaceJSON(jsonPub, &pk); err != nil {
+			return err
+		}
+
+		k, err := kb.SaveOfflineKey(name, pk)
+		if err != nil {
+			return fmt.Errorf("failed to save offline key: %w", err)
+		}
+
+		return printCreate(ctx, cmd, k, false, false, "", outputFormat)
 	}
 
 	coinType, _ := cmd.Flags().GetUint32(flagCoinType)
@@ -217,32 +278,47 @@ func runAddCmd(ctx client.Context, cmd *cobra.Command, args []string, inBuf *buf
 
 	// If we're using ledger, only thing we need is the path and the bech32 prefix.
 	if useLedger {
-		bech32PrefixAccAddr := sdk.GetConfig().GetBech32AccountAddrPrefix()
+		bech32PrefixAccAddr := ctx.AddressPrefix
 		k, err := kb.SaveLedgerKey(name, hd.Secp256k1, bech32PrefixAccAddr, coinType, account, index)
 		if err != nil {
 			return err
 		}
 
-		return printCreate(cmd, k, false, "", outputFormat)
+		return printCreate(ctx, cmd, k, false, false, "", outputFormat)
 	}
 
 	// Get bip39 mnemonic
 	var mnemonic, bip39Passphrase string
 
-	recover, _ := cmd.Flags().GetBool(flagRecover)
-	if recover {
-		mnemonic, err = input.GetString("Enter your bip39 mnemonic", inBuf)
-		if err != nil {
-			return err
+	recoverFlag, _ := cmd.Flags().GetBool(flagRecover)
+	mnemonicSrc, _ := cmd.Flags().GetString(flagMnemonicSrc)
+	if recoverFlag {
+		if mnemonicSrc != "" {
+			mnemonic, err = readMnemonicFromFile(mnemonicSrc)
+			if err != nil {
+				return err
+			}
+		} else {
+			mnemonic, err = input.GetString("Enter your bip39 mnemonic", inBuf)
+			if err != nil {
+				return err
+			}
 		}
 
 		if !bip39.IsMnemonicValid(mnemonic) {
 			return errors.New("invalid mnemonic")
 		}
 	} else if interactive {
-		mnemonic, err = input.GetString("Enter your bip39 mnemonic, or hit enter to generate one.", inBuf)
-		if err != nil {
-			return err
+		if mnemonicSrc != "" {
+			mnemonic, err = readMnemonicFromFile(mnemonicSrc)
+			if err != nil {
+				return err
+			}
+		} else {
+			mnemonic, err = input.GetString("Enter your bip39 mnemonic, or hit enter to generate one.", inBuf)
+			if err != nil {
+				return err
+			}
 		}
 
 		if !bip39.IsMnemonicValid(mnemonic) && mnemonic != "" {
@@ -265,16 +341,16 @@ func runAddCmd(ctx client.Context, cmd *cobra.Command, args []string, inBuf *buf
 
 	// override bip39 passphrase
 	if interactive {
-		bip39Passphrase, err = input.GetString(
+		bip39Passphrase, err = input.GetSecretString(
 			"Enter your bip39 passphrase. This is combined with the mnemonic to derive the seed. "+
-				"Most users should just hit enter to use the default, \"\"", inBuf)
+				"Most users should just hit enter to use the default, \"\"\n", inBuf)
 		if err != nil {
 			return err
 		}
 
 		// if they use one, make them re-enter it
 		if len(bip39Passphrase) != 0 {
-			p2, err := input.GetString("Repeat the passphrase:", inBuf)
+			p2, err := input.GetSecretString("Repeat the passphrase:\n", inBuf)
 			if err != nil {
 				return err
 			}
@@ -289,33 +365,48 @@ func runAddCmd(ctx client.Context, cmd *cobra.Command, args []string, inBuf *buf
 	if err != nil {
 		return err
 	}
+	noBackup, _ := cmd.Flags().GetBool(flagNoBackup)
+	showMnemonic := !noBackup
+	showMnemonicIndiscreetly, _ := cmd.Flags().GetBool(flagIndiscreet)
 
 	// Recover key from seed passphrase
-	if recover {
+	if recoverFlag {
 		// Hide mnemonic from output
 		showMnemonic = false
+		showMnemonicIndiscreetly = false
 		mnemonic = ""
 	}
 
-	return printCreate(cmd, k, showMnemonic, mnemonic, outputFormat)
+	return printCreate(ctx, cmd, k, showMnemonic, showMnemonicIndiscreetly, mnemonic, outputFormat)
 }
 
-func printCreate(cmd *cobra.Command, k *keyring.Record, showMnemonic bool, mnemonic, outputFormat string) error {
+func printCreate(ctx client.Context, cmd *cobra.Command, k *keyring.Record, showMnemonic, showMnemonicIndiscreetly bool, mnemonic, outputFormat string) error {
 	switch outputFormat {
-	case OutputFormatText:
+	case flags.OutputFormatText:
 		cmd.PrintErrln()
-		if err := printKeyringRecord(cmd.OutOrStdout(), k, MkAccKeyOutput, outputFormat); err != nil {
+		ko, err := MkAccKeyOutput(k, ctx.AddressCodec)
+		if err != nil {
+			return err
+		}
+
+		if err := printKeyringRecord(cmd.OutOrStdout(), ko, outputFormat); err != nil {
 			return err
 		}
 
 		// print mnemonic unless requested not to.
 		if showMnemonic {
-			if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "\n**Important** write this mnemonic phrase in a safe place.\nIt is the only way to recover your account if you ever forget your password.\n\n%s\n", mnemonic); err != nil {
-				return fmt.Errorf("failed to print mnemonic: %v", err)
+			if showMnemonicIndiscreetly {
+				if _, err = fmt.Fprintf(cmd.ErrOrStderr(), "\n**Important** write this mnemonic phrase in a safe place.\nIt is the only way to recover your account if you ever forget your password.\n\n%s\n", mnemonic); err != nil {
+					return fmt.Errorf("failed to print mnemonic: %w", err)
+				}
+			} else {
+				if err = printDiscreetly(ctx, cmd.ErrOrStderr(), "**Important** write this mnemonic phrase in a safe place.\nIt is the only way to recover your account if you ever forget your password.", mnemonic); err != nil {
+					return fmt.Errorf("failed to print mnemonic: %w", err)
+				}
 			}
 		}
-	case OutputFormatJSON:
-		out, err := MkAccKeyOutput(k)
+	case flags.OutputFormatJSON:
+		out, err := MkAccKeyOutput(k, ctx.AddressCodec)
 		if err != nil {
 			return err
 		}
@@ -336,4 +427,18 @@ func printCreate(cmd *cobra.Command, k *keyring.Record, showMnemonic bool, mnemo
 	}
 
 	return nil
+}
+
+func readMnemonicFromFile(filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	bz, err := io.ReadAll(file)
+	if err != nil {
+		return "", err
+	}
+	return string(bz), nil
 }

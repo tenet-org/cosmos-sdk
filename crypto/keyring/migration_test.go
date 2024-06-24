@@ -7,11 +7,10 @@ import (
 	"github.com/99designs/keyring"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/cosmos/cosmos-sdk/codec/legacy"
-	"github.com/cosmos/cosmos-sdk/crypto/hd"
-
 	errorsmod "cosmossdk.io/errors"
 
+	"github.com/cosmos/cosmos-sdk/codec/legacy"
+	"github.com/cosmos/cosmos-sdk/crypto/hd"
 	"github.com/cosmos/cosmos-sdk/crypto/keys/multisig"
 	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
@@ -247,7 +246,7 @@ func newLegacyLocalInfo(name string, pub cryptotypes.PubKey, privArmor string, a
 	}
 }
 
-// newLegacyOfflineInfo creates a new legacyLedgerInfo instance
+// newLegacyLedgerInfo creates a new legacyLedgerInfo instance
 func newLegacyLedgerInfo(name string, pub cryptotypes.PubKey, path hd.BIP44Params, algo hd.PubKeyType) LegacyInfo {
 	return &legacyLedgerInfo{
 		Name:   name,

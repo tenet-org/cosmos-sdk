@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"net"
 
-	"cosmossdk.io/log"
 	"google.golang.org/grpc"
+
+	"cosmossdk.io/log"
 
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/codec"
@@ -14,7 +15,6 @@ import (
 	"github.com/cosmos/cosmos-sdk/server/grpc/gogoreflection"
 	reflection "github.com/cosmos/cosmos-sdk/server/grpc/reflection/v2alpha1"
 	"github.com/cosmos/cosmos-sdk/server/types"
-	sdk "github.com/cosmos/cosmos-sdk/types"
 	_ "github.com/cosmos/cosmos-sdk/types/tx/amino" // Import amino.proto file for reflection
 )
 
@@ -44,15 +44,15 @@ func NewGRPCServer(clientCtx client.Context, app types.Application, cfg config.G
 	// time.
 	err := reflection.Register(grpcSrv, reflection.Config{
 		SigningModes: func() map[string]int32 {
-			modes := make(map[string]int32, len(clientCtx.TxConfig.SignModeHandler().Modes()))
-			for _, m := range clientCtx.TxConfig.SignModeHandler().Modes() {
+			supportedModes := clientCtx.TxConfig.SignModeHandler().SupportedModes()
+			modes := make(map[string]int32, len(supportedModes))
+			for _, m := range supportedModes {
 				modes[m.String()] = (int32)(m)
 			}
 
 			return modes
 		}(),
 		ChainID:           clientCtx.ChainID,
-		SdkConfig:         sdk.GetConfig(),
 		InterfaceRegistry: clientCtx.InterfaceRegistry,
 	})
 	if err != nil {
@@ -91,7 +91,7 @@ func StartGRPCServer(ctx context.Context, logger log.Logger, cfg config.GRPCConf
 	// the server failed to start properly.
 	select {
 	case <-ctx.Done():
-		// The calling process cancelled or closed the provided context, so we must
+		// The calling process canceled or closed the provided context, so we must
 		// gracefully stop the gRPC server.
 		logger.Info("stopping gRPC server...", "address", cfg.Address)
 		grpcSrv.GracefulStop()

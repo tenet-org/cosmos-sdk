@@ -3,10 +3,10 @@ package cache
 import (
 	"fmt"
 
+	lru "github.com/hashicorp/golang-lru"
+
 	"cosmossdk.io/store/cachekv"
 	"cosmossdk.io/store/types"
-
-	lru "github.com/hashicorp/golang-lru"
 )
 
 var (
@@ -43,7 +43,7 @@ type (
 func NewCommitKVStoreCache(store types.CommitKVStore, size uint) *CommitKVStoreCache {
 	cache, err := lru.NewARC(int(size))
 	if err != nil {
-		panic(fmt.Errorf("failed to create KVStore cache: %s", err))
+		panic(fmt.Errorf("failed to create KVStore cache: %w", err))
 	}
 
 	return &CommitKVStoreCache{

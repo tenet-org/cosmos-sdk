@@ -9,11 +9,12 @@ import (
 
 // TimestampCodec encodes google.protobuf.Timestamp values with the following
 // encoding:
-// - nil is encoded as []byte{0xFF}
-// - seconds (which can range from 0001-01-01T00:00:00Z to 9999-12-31T23:59:59Z) is encoded as 5 fixed bytes
-// - nanos (which can range from 0 to 999,999,999) is encoded as:
-//   - []byte{0x0} for zero nanos
-//   - 4 fixed bytes with the bit mask 0xC0 applied to the first byte
+//   - nil is encoded as []byte{0xFF}
+//   - seconds (which can range from 0001-01-01T00:00:00Z to 9999-12-31T23:59:59Z) is encoded as 5 fixed bytes
+//   - nanos (which can range from 0 to 999,999,999 or -999,999,999 to 0 if seconds is negative) are encoded such
+//     that 999,999,999 is always added to nanos. This ensures that the encoded nanos are always >= 0. Additionally,
+//     by adding 999,999,999 to both positive and negative nanos, we guarantee that the lexicographical order is
+//     preserved when comparing the encoded values of two Timestamps.
 //
 // When iterating over timestamp indexes, nil values will always be ordered last.
 //
@@ -21,38 +22,33 @@ import (
 type TimestampCodec struct{}
 
 const (
-	timestampNilValue       = 0xFF
-	timestampZeroNanosValue = 0x0
-	timestampSecondsMin     = -62135579038
-	timestampSecondsMax     = 253402318799
-	timestampNanosMax       = 999999999
+	timestampDurationNilValue             = 0xFF
+	timestampDurationZeroNanosValue       = 0x0
+	timestampDurationBufferSize           = 9
+	TimestampSecondsMin             int64 = -62135596800
+	TimestampSecondsMax             int64 = 253402300799
+	TimestampNanosMax                     = 999999999
 )
 
 var (
-	timestampNilBz       = []byte{timestampNilValue}
-	timestampZeroNanosBz = []byte{timestampZeroNanosValue}
+	timestampDurationNilBz = []byte{timestampDurationNilValue}
+	timestampZeroNanosBz   = []byte{timestampDurationZeroNanosValue}
 )
 
 func (t TimestampCodec) Encode(value protoreflect.Value, w io.Writer) error {
 	// nil case
 	if !value.IsValid() {
-		_, err := w.Write(timestampNilBz)
+		_, err := w.Write(timestampDurationNilBz)
 		return err
 	}
 
 	seconds, nanos := getTimestampSecondsAndNanos(value)
 	secondsInt := seconds.Int()
-	if secondsInt < timestampSecondsMin || secondsInt > timestampSecondsMax {
-		return fmt.Errorf("seconds is out of range %d, must be between %d and %d", secondsInt, timestampSecondsMin, timestampSecondsMax)
+	if secondsInt < TimestampSecondsMin || secondsInt > TimestampSecondsMax {
+		return fmt.Errorf("timestamp seconds is out of range %d, must be between %d and %d", secondsInt, TimestampSecondsMin, TimestampSecondsMax)
 	}
-	secondsInt -= timestampSecondsMin
-	var secondsBz [5]byte
-	// write the seconds buffer from the end to the front
-	for i := 4; i >= 0; i-- {
-		secondsBz[i] = byte(secondsInt)
-		secondsInt >>= 8
-	}
-	_, err := w.Write(secondsBz[:])
+	secondsInt -= TimestampSecondsMin
+	err := encodeSeconds(secondsInt, w)
 	if err != nil {
 		return err
 	}
@@ -63,75 +59,123 @@ func (t TimestampCodec) Encode(value protoreflect.Value, w io.Writer) error {
 		return err
 	}
 
-	if nanosInt < 0 || nanosInt > timestampNanosMax {
-		return fmt.Errorf("nanos is out of range %d, must be between %d and %d", secondsInt, 0, timestampNanosMax)
+	if nanosInt < 0 || nanosInt > TimestampNanosMax {
+		return fmt.Errorf("timestamp nanos is out of range %d, must be between %d and %d", secondsInt, 0, TimestampNanosMax)
 	}
 
+	return encodeNanos(nanosInt, w)
+}
+
+func encodeSeconds(secondsInt int64, w io.Writer) error {
+	var secondsBz [5]byte
+	// write the seconds buffer from the end to the front
+	for i := 4; i >= 0; i-- {
+		secondsBz[i] = byte(secondsInt)
+		secondsInt >>= 8
+	}
+	_, err := w.Write(secondsBz[:])
+	return err
+}
+
+func encodeNanos(nanosInt int64, w io.Writer) error {
 	var nanosBz [4]byte
 	for i := 3; i >= 0; i-- {
 		nanosBz[i] = byte(nanosInt)
 		nanosInt >>= 8
 	}
-	nanosBz[0] = nanosBz[0] | 0xC0
-	_, err = w.Write(nanosBz[:])
+
+	// This condition is crucial to ensure the function's correct behavior when dealing with a Timestamp or Duration encoding.
+	// Specifically, this function is bypassed for Timestamp values when their nanoseconds part is zero.
+	// In the decodeNanos function, there's a preliminary check for a zero first byte, which represents all values ≤ 16777215 (00000000 11111111 11111111 11111111).
+	// Without this adjustment (setting the first byte to 0x80 with is 10000000 in binary format), decodeNanos would incorrectly return 0 for any number ≤ 16777215,
+	// leading to inaccurate decoding of nanoseconds.
+	nanosBz[0] |= 0x80
+	_, err := w.Write(nanosBz[:])
 	return err
 }
 
 func (t TimestampCodec) Decode(r Reader) (protoreflect.Value, error) {
-	b0, err := r.ReadByte()
+	isNil, seconds, err := decodeSeconds(r)
+	if isNil || err != nil {
+		return protoreflect.Value{}, err
+	}
+
+	seconds += TimestampSecondsMin
+
+	msg := timestampMsgType.New()
+	msg.Set(timestampSecondsField, protoreflect.ValueOfInt64(seconds))
+
+	nanos, err := decodeNanos(r)
 	if err != nil {
 		return protoreflect.Value{}, err
 	}
 
-	if b0 == timestampNilValue {
-		return protoreflect.Value{}, nil
+	if nanos == 0 {
+		return protoreflect.ValueOfMessage(msg), nil
+	}
+
+	msg.Set(timestampNanosField, protoreflect.ValueOfInt32(nanos))
+	return protoreflect.ValueOfMessage(msg), nil
+}
+
+func decodeSeconds(r Reader) (isNil bool, seconds int64, err error) {
+	b0, err := r.ReadByte()
+	if err != nil {
+		return false, 0, err
+	}
+
+	if b0 == timestampDurationNilValue {
+		return true, 0, nil
 	}
 
 	var secondsBz [4]byte
 	n, err := r.Read(secondsBz[:])
 	if err != nil {
-		return protoreflect.Value{}, err
+		return false, 0, err
 	}
 	if n < 4 {
-		return protoreflect.Value{}, io.EOF
+		return false, 0, io.EOF
 	}
 
-	seconds := int64(b0)
+	seconds = int64(b0)
 	for i := 0; i < 4; i++ {
 		seconds <<= 8
 		seconds |= int64(secondsBz[i])
 	}
-	seconds += timestampSecondsMin
 
-	msg := timestampMsgType.New()
-	msg.Set(timestampSecondsField, protoreflect.ValueOfInt64(seconds))
+	return false, seconds, nil
+}
 
-	b0, err = r.ReadByte()
+func decodeNanos(r Reader) (int32, error) {
+	b0, err := r.ReadByte()
 	if err != nil {
-		return protoreflect.Value{}, err
+		return 0, err
 	}
 
-	if b0 == timestampZeroNanosValue {
-		return protoreflect.ValueOfMessage(msg), nil
+	if b0 == timestampDurationZeroNanosValue {
+		return 0, nil
 	}
 
 	var nanosBz [3]byte
-	n, err = r.Read(nanosBz[:])
+	n, err := r.Read(nanosBz[:])
 	if err != nil {
-		return protoreflect.Value{}, err
+		return 0, err
 	}
 	if n < 3 {
-		return protoreflect.Value{}, io.EOF
+		return 0, io.EOF
 	}
 
-	nanos := int32(b0) & 0x3F // clear first two bits
+	// Clear the first bit, previously set in encodeNanos, to ensure this logic is applied
+	// and for numbers ≤ 16777215. This adjustment guarantees that we accurately interpret
+	// the value as intended when encoding smaller numbers.
+	nanos := int32(b0) & 0x7F
+
 	for i := 0; i < 3; i++ {
 		nanos <<= 8
 		nanos |= int32(nanosBz[i])
 	}
 
-	msg.Set(timestampNanosField, protoreflect.ValueOfInt32(nanos))
-	return protoreflect.ValueOfMessage(msg), nil
+	return nanos, nil
 }
 
 func (t TimestampCodec) Compare(v1, v2 protoreflect.Value) int {
@@ -151,9 +195,9 @@ func (t TimestampCodec) Compare(v1, v2 protoreflect.Value) int {
 	c := compareInt(s1, s2)
 	if c != 0 {
 		return c
-	} else {
-		return compareInt(n1, n2)
 	}
+
+	return compareInt(n1, n2)
 }
 
 func (t TimestampCodec) IsOrdered() bool {
@@ -161,11 +205,11 @@ func (t TimestampCodec) IsOrdered() bool {
 }
 
 func (t TimestampCodec) FixedBufferSize() int {
-	return 9
+	return timestampDurationBufferSize
 }
 
 func (t TimestampCodec) ComputeBufferSize(protoreflect.Value) (int, error) {
-	return 9, nil
+	return timestampDurationBufferSize, nil
 }
 
 // TimestampV0Codec encodes a google.protobuf.Timestamp value as 12 bytes using
@@ -215,9 +259,9 @@ func (t TimestampV0Codec) Compare(v1, v2 protoreflect.Value) int {
 	c := compareInt(s1, s2)
 	if c != 0 {
 		return c
-	} else {
-		return compareInt(n1, n2)
 	}
+
+	return compareInt(n1, n2)
 }
 
 func (t TimestampV0Codec) IsOrdered() bool {
@@ -230,4 +274,134 @@ func (t TimestampV0Codec) FixedBufferSize() int {
 
 func (t TimestampV0Codec) ComputeBufferSize(protoreflect.Value) (int, error) {
 	return t.FixedBufferSize(), nil
+}
+
+type TimestampV1Codec struct{}
+
+func (t TimestampV1Codec) Encode(value protoreflect.Value, w io.Writer) error {
+	// nil case
+	if !value.IsValid() {
+		_, err := w.Write(timestampDurationNilBz)
+		return err
+	}
+
+	seconds, nanos := getTimestampSecondsAndNanos(value)
+	secondsInt := seconds.Int()
+	if secondsInt < TimestampSecondsMin || secondsInt > TimestampSecondsMax {
+		return fmt.Errorf("timestamp seconds is out of range %d, must be between %d and %d", secondsInt, TimestampSecondsMin, TimestampSecondsMax)
+	}
+	secondsInt -= TimestampSecondsMin
+	err := encodeSeconds(secondsInt, w)
+	if err != nil {
+		return err
+	}
+
+	nanosInt := nanos.Int()
+	if nanosInt == 0 {
+		_, err = w.Write(timestampZeroNanosBz)
+		return err
+	}
+
+	if nanosInt < 0 || nanosInt > TimestampNanosMax {
+		return fmt.Errorf("timestamp nanos is out of range %d, must be between %d and %d", secondsInt, 0, TimestampNanosMax)
+	}
+
+	return encodeNanosV1(nanosInt, w)
+}
+
+func (t TimestampV1Codec) Decode(r Reader) (protoreflect.Value, error) {
+	isNil, seconds, err := decodeSeconds(r)
+	if isNil || err != nil {
+		return protoreflect.Value{}, err
+	}
+
+	seconds += TimestampSecondsMin
+
+	msg := timestampMsgType.New()
+	msg.Set(timestampSecondsField, protoreflect.ValueOfInt64(seconds))
+
+	nanos, err := decodeNanosV1(r)
+	if err != nil {
+		return protoreflect.Value{}, err
+	}
+
+	if nanos == 0 {
+		return protoreflect.ValueOfMessage(msg), nil
+	}
+
+	msg.Set(timestampNanosField, protoreflect.ValueOfInt32(nanos))
+	return protoreflect.ValueOfMessage(msg), nil
+}
+
+func (t TimestampV1Codec) Compare(v1, v2 protoreflect.Value) int {
+	if !v1.IsValid() {
+		if !v2.IsValid() {
+			return 0
+		}
+		return 1
+	}
+
+	if !v2.IsValid() {
+		return -1
+	}
+
+	s1, n1 := getTimestampSecondsAndNanos(v1)
+	s2, n2 := getTimestampSecondsAndNanos(v2)
+	c := compareInt(s1, s2)
+	if c != 0 {
+		return c
+	}
+
+	return compareInt(n1, n2)
+}
+
+func (t TimestampV1Codec) IsOrdered() bool {
+	return true
+}
+
+func (t TimestampV1Codec) FixedBufferSize() int {
+	return timestampDurationBufferSize
+}
+
+func (t TimestampV1Codec) ComputeBufferSize(protoreflect.Value) (int, error) {
+	return timestampDurationBufferSize, nil
+}
+
+func encodeNanosV1(nanosInt int64, w io.Writer) error {
+	var nanosBz [4]byte
+	for i := 3; i >= 0; i-- {
+		nanosBz[i] = byte(nanosInt)
+		nanosInt >>= 8
+	}
+	nanosBz[0] |= 0xC0
+	_, err := w.Write(nanosBz[:])
+	return err
+}
+
+func decodeNanosV1(r Reader) (int32, error) {
+	b0, err := r.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+
+	if b0 == timestampDurationZeroNanosValue {
+		return 0, nil
+	}
+
+	var nanosBz [3]byte
+	n, err := r.Read(nanosBz[:])
+	if err != nil {
+		return 0, err
+	}
+	if n < 3 {
+		return 0, io.EOF
+	}
+
+	nanos := int32(b0) & 0x3F // clear first two bits
+	for i := 0; i < 3; i++ {
+		nanos <<= 8
+		nanos |= int32(nanosBz[i])
+	}
+
+	return nanos, nil
 }

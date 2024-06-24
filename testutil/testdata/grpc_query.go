@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/cosmos/gogoproto/types/any/test"
+
 	"github.com/cosmos/gogoproto/proto"
-	grpc "google.golang.org/grpc"
+	"google.golang.org/grpc"
 	"gotest.tools/v3/assert"
 
 	"github.com/cosmos/cosmos-sdk/codec/types"
@@ -22,7 +24,7 @@ type QueryImpl struct{}
 var _ QueryServer = QueryImpl{}
 
 func (e QueryImpl) TestAny(_ context.Context, request *TestAnyRequest) (*TestAnyResponse, error) {
-	animal, ok := request.AnyAnimal.GetCachedValue().(Animal)
+	animal, ok := request.AnyAnimal.GetCachedValue().(test.Animal)
 	if !ok {
 		return nil, fmt.Errorf("expected Animal")
 	}
@@ -50,7 +52,7 @@ func (e QueryImpl) SayHello(_ context.Context, request *SayHelloRequest) (*SayHe
 var _ types.UnpackInterfacesMessage = &TestAnyRequest{}
 
 func (m *TestAnyRequest) UnpackInterfaces(unpacker types.AnyUnpacker) error {
-	var animal Animal
+	var animal test.Animal
 	return unpacker.UnpackAny(m.AnyAnimal, &animal)
 }
 
@@ -66,14 +68,15 @@ func (m *TestAnyResponse) UnpackInterfaces(unpacker types.AnyUnpacker) error {
 // 2. That the gas consumption of the query is the same. When
 // `gasOverwrite` is set to true, we also check that this consumed
 // gas value is equal to the hardcoded `gasConsumed`.
-func DeterministicIterations[request proto.Message, response proto.Message](
-	ctx sdk.Context,
+func DeterministicIterations[request, response proto.Message](
 	t *testing.T,
+	ctx sdk.Context,
 	req request,
 	grpcFn func(context.Context, request, ...grpc.CallOption) (response, error),
 	gasConsumed uint64,
 	gasOverwrite bool,
 ) {
+	t.Helper()
 	before := ctx.GasMeter().GasConsumed()
 	prevRes, err := grpcFn(ctx, req)
 	assert.NilError(t, err)

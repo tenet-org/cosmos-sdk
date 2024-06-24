@@ -15,9 +15,9 @@ import (
 	querytypes "github.com/cosmos/cosmos-sdk/types/query"
 )
 
-// QueryTxsByEvents retrieves a list of paginated transactions from Tendermint's
+// QueryTxsByEvents retrieves a list of paginated transactions from CometBFT's
 // TxSearch RPC method given a set of pagination criteria and an events query.
-// Note, the events query must be valid based on Tendermint's query semantics.
+// Note, the events query must be valid based on CometBFT's query semantics.
 // An error is returned if the query or parsing fails or if the query is empty.
 //
 // Note, if an empty orderBy is provided, the default behavior is ascending. If
@@ -27,7 +27,7 @@ func QueryTxsByEvents(clientCtx client.Context, page, limit int, query, orderBy 
 		return nil, errors.New("query cannot be empty")
 	}
 
-	// Tendermint node.TxSearch that is used for querying txs defines pages
+	// CometBFT node.TxSearch that is used for querying txs defines pages
 	// starting from 1, so we default to 1 if not provided in the request.
 	if page <= 0 {
 		page = 1
@@ -73,8 +73,6 @@ func QueryTx(clientCtx client.Context, hashHexStr string) (*sdk.TxResponse, erro
 		return nil, err
 	}
 
-	// TODO: this may not always need to be proven
-	// https://github.com/cosmos/cosmos-sdk/issues/6807
 	resTx, err := node.Tx(context.Background(), hash, true)
 	if err != nil {
 		return nil, err
@@ -116,6 +114,8 @@ func getBlocksForTxResults(clientCtx client.Context, resTxs []*coretypes.ResultT
 	resBlocks := make(map[int64]*coretypes.ResultBlock)
 
 	for _, resTx := range resTxs {
+		resTx := resTx
+
 		if _, ok := resBlocks[resTx.Height]; !ok {
 			resBlock, err := node.Block(context.Background(), &resTx.Height)
 			if err != nil {
@@ -134,16 +134,18 @@ func mkTxResult(txConfig client.TxConfig, resTx *coretypes.ResultTx, resBlock *c
 	if err != nil {
 		return nil, err
 	}
-	p, ok := txb.(intoAny)
+	p, ok := txb.(*gogoTxWrapper)
 	if !ok {
-		return nil, fmt.Errorf("expecting a type implementing intoAny, got: %T", txb)
+		return nil, fmt.Errorf("unexpected type, wanted gogoTxWrapper, got: %T", txb)
 	}
-	any := p.AsAny()
-	return sdk.NewResponseResultTx(resTx, any, resBlock.Block.Time.Format(time.RFC3339)), nil
-}
 
-// Deprecated: this interface is used only internally for scenario we are
-// deprecating (StdTxConfig support)
-type intoAny interface {
-	AsAny() *codectypes.Any
+	tx, err := p.AsTx()
+	if err != nil {
+		return nil, err
+	}
+	anyTx, err := codectypes.NewAnyWithValue(tx)
+	if err != nil {
+		return nil, err
+	}
+	return sdk.NewResponseResultTx(resTx, anyTx, resBlock.Block.Time.Format(time.RFC3339)), nil
 }

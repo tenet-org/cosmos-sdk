@@ -1,4 +1,4 @@
-go 1.20
+go 1.22.2
 
 use (
 	.
@@ -6,6 +6,7 @@ use (
 	./client/v2
 	./collections
 	./core
+	./core/testing
 	./depinject
 	./errors
 	./log
@@ -13,15 +14,34 @@ use (
 	./orm
 	./simapp
 	./tests
+	./tests/systemtests
+	./server/v2/stf
+	./server/v2/appmanager
 	./store
-	./tools/rosetta
+	./store/v2
+	./runtime/v2
 	./tools/cosmovisor
 	./tools/confix
 	./tools/hubl
-	./x/tx
-	./x/nft
+	./x/accounts
+	./x/accounts/defaults/lockup
+	./x/auth
+	./x/authz
+	./x/bank
 	./x/circuit
-	./x/feegrant
+	./x/consensus
+	./x/distribution
 	./x/evidence
+	./x/feegrant
+ 	./x/gov
+	./x/group
+	./x/mint
+	./x/nft
+	./x/params
+	./x/protocolpool
+	./x/slashing
+	./x/staking
+	./x/tx
 	./x/upgrade
+	./x/epochs
 )
